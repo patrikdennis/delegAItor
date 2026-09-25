@@ -343,14 +343,17 @@ This token is scoped to you personally (like a PAT), so the default
    accepts either form).
 2. **Check your database's property names** against delegAItor's defaults,
    since Notion schemas are entirely user-defined:
-   - Title property: defaults to `Name`.
-   - Status property: defaults to `Status` (a Select property).
+   - Title property: defaults to `Name` — override with `--notion-title-prop`
+     if yours is named differently (e.g. `Task`).
+   - Status property: defaults to `Status` — works with either Notion's
+     older `select` type or its newer `status` type automatically, no
+     config needed either way.
    - Assignee property: defaults to `Assignee` (a Person property).
-   - If your database uses different names for these three, there's
-     currently no CLI flag for them — call `notionTicketSource()` directly
-     from `packages/core/src/tickets/notion.ts` with a `properties: {...}`
-     override (e.g. `{ title: "Task", assignee: "Owner" }`), or add CLI
-     flags yourself (`--notion-title-prop`, etc.) as a small PR.
+   - If your database uses a different name for the assignee property,
+     there's currently no CLI flag for it — call `notionTicketSource()`
+     directly from `packages/core/src/tickets/notion.ts` with a
+     `properties: { assignee: "Owner" }` override, or add a
+     `--notion-assignee-prop` flag yourself as a small PR.
 3. **Context passed to the agent**: by default delegAItor fetches each
    page's actual **body content** — the paragraphs/headings/bullet lists
    written below the title and properties, the same text you see
@@ -368,7 +371,7 @@ This token is scoped to you personally (like a PAT), so the default
 4. **Export the token and preview** (no worktrees/agents created yet):
    ```bash
    export NOTION_API_KEY=<your token from option A, B, or C>
-   delegaitor plan --notion-db <database-id> --repo owner/repo
+   delegaitor plan --notion-db <database-id> --notion-title-prop "Task" --repo owner/repo
    ```
 5. **Restrict to specific board columns/stages** with `--notion-status`
    (recommended — otherwise every status, including Done, is pulled): pass
@@ -381,13 +384,28 @@ This token is scoped to you personally (like a PAT), so the default
    Every team/board names these differently ("To do", "Ready", "Backlog",
    etc.), so there's no built-in default — check the actual values in your
    Notion database's Status column and use those exact strings.
-6. **If it resolves 0 tickets but you expect some**, check in this order:
+6. **Restrict to one project on a shared multi-project board** with
+   `--notion-project-prop`/`--notion-project`. Some boards track "project"
+   with a simple `select` property (usable directly); others use a
+   `relation` to a separate Projects database, which only exposes an
+   opaque id, not a name — for those, point at a `rollup` property that
+   surfaces the related project's title instead (many boards already have
+   one for exactly this reason, or add one: new rollup property → relate
+   to your Project relation → show its title):
+   ```bash
+   delegaitor plan --notion-db <database-id> --notion-project-prop "Product Rollup" \
+     --notion-project "Sales Engine — Förberedelser för utrullning till fler återförsäljare" \
+     --repo owner/repo
+   ```
+   Every workspace organizes projects differently, so check your
+   database's actual property name/values first.
+7. **If it resolves 0 tickets but you expect some**, check in this order:
    - Option B only: the integration is actually connected to that
      database (its step 4).
    - Your property names match the defaults, or you've supplied overrides
      (step 2 above).
-   - Your `--notion-status` values (step 5 above) exactly match the
-     Status column's text, including capitalization.
+   - Your `--notion-status`/`--notion-project` values (steps 5–6 above)
+     exactly match the column's text, including capitalization.
    - The shared-token gotcha below — the most common cause when a whole
      team uses one Internal-integration secret (Option B).
    - Run with `--all` temporarily to confirm the database/connection
