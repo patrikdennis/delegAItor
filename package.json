@@ -11,7 +11,8 @@
     "typecheck": "tsc -b --pretty",
     "cli": "node --enable-source-maps packages/cli/dist/index.js",
     "dev:cli": "tsx packages/cli/src/index.ts",
-    "dev:mcp": "tsx packages/mcp-server/src/index.ts"
+    "dev:mcp": "tsx packages/mcp-server/src/index.ts",
+    "notion:oauth-login": "node scripts/notion-oauth-login.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
