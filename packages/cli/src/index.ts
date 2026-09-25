@@ -43,7 +43,7 @@ program
   .option("--jira-project <key>", "pull tickets from this Jira project (uses JIRA_BASE_URL/JIRA_EMAIL/JIRA_API_TOKEN)")
   .option("--jira-jql <jql>", "custom JQL, overrides the default mine/project query")
   .action(async (text, opts) => {
-    const rawInput = await readInput(text, opts.file);
+    const rawInput = await readInput(text, opts.file, opts);
     const plan = await resolvePlan(rawInput, opts);
     printPlan(plan);
   });
@@ -67,7 +67,7 @@ program
   .option("--jira-jql <jql>", "custom JQL, overrides the default mine/project query")
   .option("-y, --yes", "skip confirmation prompt")
   .action(async (text, opts) => {
-    const rawInput = await readInput(text, opts.file);
+    const rawInput = await readInput(text, opts.file, opts);
     const plan = await resolvePlan(rawInput, opts);
     printPlan(plan);
     if (!plan.tickets.length) return;
@@ -256,10 +256,30 @@ program.parseAsync(process.argv);
 
 // --- helpers -----------------------------------------------------------
 
-async function readInput(text: string | undefined, file: string | undefined): Promise<string> {
+// Any ticket-source flag lets you skip the raw-text argument entirely, since
+// these pull tickets directly from an API rather than parsing #123-refs or a
+// markdown list out of freeform text.
+function hasExternalTicketSource(opts: {
+  githubMine?: boolean;
+  notionDb?: string;
+  linear?: boolean;
+  jiraProject?: string;
+  jiraJql?: string;
+}): boolean {
+  return Boolean(opts.githubMine || opts.notionDb || opts.linear || opts.jiraProject || opts.jiraJql);
+}
+
+async function readInput(
+  text: string | undefined,
+  file: string | undefined,
+  opts: { githubMine?: boolean; notionDb?: string; linear?: boolean; jiraProject?: string; jiraJql?: string }
+): Promise<string> {
   const input = text ?? (file ? readFileSync(file, "utf8") : await readStdinIfPiped()) ?? "";
-  if (!input.trim()) {
-    console.error("No ticket text provided (pass an argument, --file, or pipe via stdin).");
+  if (!input.trim() && !hasExternalTicketSource(opts)) {
+    console.error(
+      "No ticket text provided (pass an argument, --file, pipe via stdin, or use a ticket-source flag " +
+        "like --notion-db, --linear, --jira-project, or --github-mine)."
+    );
     process.exit(1);
   }
   return input;
