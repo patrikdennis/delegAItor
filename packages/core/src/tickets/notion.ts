@@ -89,8 +89,6 @@ export function notionTicketSource(opts: NotionSourceOptions): TicketSource {
       }
 
       const filter = buildFilter({
-        statusProp: !explicitSelection ? props.status : undefined,
-        readyStatuses: !explicitSelection ? opts.readyStatuses : undefined,
         assigneeProp: shouldFilterByAssignee ? props.assignee : undefined,
         assigneeUserId: shouldFilterByAssignee ? assigneeUserId : undefined,
       });
@@ -130,6 +128,10 @@ export function notionTicketSource(opts: NotionSourceOptions): TicketSource {
         if (!title) continue;
         if (explicitSelection && !wanted.some((w) => title.includes(w) || p.id === w)) {
           continue;
+        }
+        if (!explicitSelection && opts.readyStatuses?.length) {
+          const statusValue = plainText(p.properties[props.status]);
+          if (!statusValue || !opts.readyStatuses.includes(statusValue)) continue;
         }
         const repoId = props.repo
           ? (plainText(p.properties[props.repo]) ?? opts.defaultRepoId)
@@ -269,20 +271,10 @@ async function fetchCurrentUserId(baseUrl: string, apiKey: string): Promise<stri
 }
 
 function buildFilter(args: {
-  statusProp?: string;
-  readyStatuses?: string[];
   assigneeProp?: string;
   assigneeUserId?: string;
 }): NotionFilter | undefined {
   const clauses: NotionFilter[] = [];
-  if (args.statusProp && args.readyStatuses?.length) {
-    clauses.push({
-      or: args.readyStatuses.map((status) => ({
-        property: args.statusProp!,
-        select: { equals: status },
-      })),
-    });
-  }
   if (args.assigneeProp && args.assigneeUserId) {
     clauses.push({
       property: args.assigneeProp,
@@ -297,7 +289,6 @@ function buildFilter(args: {
 type NotionFilter =
   | { and: NotionFilter[] }
   | { or: NotionFilter[] }
-  | { property: string; select: { equals: string } }
   | { property: string; people: { contains: string } };
 
 interface NotionPage {
@@ -311,9 +302,16 @@ type NotionProperty = {
   title?: { plain_text: string }[];
   rich_text?: { plain_text: string }[];
   select?: { name: string } | null;
+  status?: { name: string } | null;
   url?: string;
 };
 
+/**
+ * Reads a property's plain-text value. Notion has two distinct "labeled
+ * dropdown" property types with the same underlying shape — the older
+ * `select` and the newer `status` (which newly-created databases/boards
+ * often use by default) — so both are handled the same way here.
+ */
 function plainText(prop: NotionProperty | undefined): string | undefined {
   if (!prop) return undefined;
   if (prop.type === "title") return prop.title?.map((t) => t.plain_text).join("") || undefined;
@@ -321,5 +319,6 @@ function plainText(prop: NotionProperty | undefined): string | undefined {
     return prop.rich_text?.map((t) => t.plain_text).join("") || undefined;
   if (prop.type === "url") return prop.url ?? undefined;
   if (prop.type === "select") return prop.select?.name;
+  if (prop.type === "status") return prop.status?.name;
   return undefined;
 }
