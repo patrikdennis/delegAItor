@@ -16,6 +16,29 @@ export interface GithubSourceOptions {
    * unrelated repos).
    */
   includeAssignedToMe?: boolean;
+  /**
+   * Also fetch each issue's comment thread and append it to the ticket
+   * body as extra context (defaults to false — it's an extra `gh` call
+   * per issue, so opt in when you expect useful discussion in comments).
+   */
+  includeComments?: boolean;
+}
+
+interface GithubComment {
+  author?: { login?: string };
+  body?: string;
+  createdAt?: string;
+}
+
+/** Flattens a GitHub issue's comment thread into readable plain text, oldest first. */
+function formatComments(comments: GithubComment[] | undefined): string | undefined {
+  if (!comments?.length) return undefined;
+  const lines = comments.map((c) => {
+    const author = c.author?.login ?? "unknown";
+    const when = c.createdAt ? ` (${c.createdAt})` : "";
+    return `${author}${when}:\n${c.body ?? ""}`;
+  });
+  return `--- Comments ---\n${lines.join("\n\n")}`;
 }
 
 /**
@@ -43,28 +66,25 @@ export function githubTicketSource(opts: GithubSourceOptions = {}): TicketSource
         const key = `${repo}#${number}`;
         if (seen.has(key)) continue;
         seen.add(key);
-        const { stdout } = await execa("gh", [
-          "issue",
-          "view",
-          number,
-          "--repo",
-          repo,
-          "--json",
-          "number,title,body,url",
-        ]);
+        const jsonFields = opts.includeComments ? "number,title,body,url,comments" : "number,title,body,url";
+        const { stdout } = await execa("gh", ["issue", "view", number, "--repo", repo, "--json", jsonFields]);
         const issue = JSON.parse(stdout) as {
           number: number;
           title: string;
           body: string;
           url: string;
+          comments?: GithubComment[];
         };
         const repoPath = repo === opts.defaultRepo ? opts.defaultRepoPath : undefined;
+        const body = [issue.body, opts.includeComments ? formatComments(issue.comments) : undefined]
+          .filter(Boolean)
+          .join("\n\n");
         tickets.push({
           source: "github",
           externalId: String(issue.number),
           externalUrl: issue.url,
           title: issue.title,
-          body: issue.body,
+          body: body || undefined,
           repoId: repo,
           repoPath: repoPath ?? repo,
         });
@@ -74,6 +94,7 @@ export function githubTicketSource(opts: GithubSourceOptions = {}): TicketSource
         if (!opts.defaultRepo) {
           throw new Error("githubTicketSource: includeAssignedToMe requires defaultRepo to be set.");
         }
+        const jsonFields = opts.includeComments ? "number,title,body,url,comments" : "number,title,body,url";
         const { stdout } = await execa("gh", [
           "issue",
           "list",
@@ -84,19 +105,28 @@ export function githubTicketSource(opts: GithubSourceOptions = {}): TicketSource
           "--repo",
           opts.defaultRepo,
           "--json",
-          "number,title,body,url",
+          jsonFields,
         ]);
-        const mine = JSON.parse(stdout) as { number: number; title: string; body: string; url: string }[];
+        const mine = JSON.parse(stdout) as {
+          number: number;
+          title: string;
+          body: string;
+          url: string;
+          comments?: GithubComment[];
+        }[];
         for (const issue of mine) {
           const key = `${opts.defaultRepo}#${issue.number}`;
           if (seen.has(key)) continue;
           seen.add(key);
+          const body = [issue.body, opts.includeComments ? formatComments(issue.comments) : undefined]
+            .filter(Boolean)
+            .join("\n\n");
           tickets.push({
             source: "github",
             externalId: String(issue.number),
             externalUrl: issue.url,
             title: issue.title,
-            body: issue.body,
+            body: body || undefined,
             repoId: opts.defaultRepo,
             repoPath: opts.defaultRepoPath ?? opts.defaultRepo,
           });
