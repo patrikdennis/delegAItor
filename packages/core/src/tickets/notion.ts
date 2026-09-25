@@ -149,7 +149,21 @@ async function fetchCurrentUserId(baseUrl: string, apiKey: string): Promise<stri
   if (!res.ok) {
     throw new Error(`Notion /users/me failed: ${res.status} ${await res.text()}`);
   }
-  const me = (await res.json()) as { id: string };
+  const me = (await res.json()) as {
+    id: string;
+    type?: "person" | "bot";
+    bot?: { owner?: { type?: "workspace" | "user"; user?: { id: string } } };
+  };
+  // `/v1/users/me` returns the integration's *bot* user, not you. For a
+  // personal internal integration (owner.type === "user"), Notion tells us
+  // which human owns it -- use that id so the assignee filter matches
+  // "People" properties, which reference real workspace members, not bots.
+  // For a workspace-owned/shared integration there's no way to infer which
+  // teammate is running it; callers must pass `assigneeUserId` explicitly
+  // in that case (see README).
+  if (me.type === "bot" && me.bot?.owner?.type === "user" && me.bot.owner.user?.id) {
+    return me.bot.owner.user.id;
+  }
   return me.id;
 }
 

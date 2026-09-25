@@ -37,6 +37,7 @@ program
   .option("--all", "pull every ticket on shared boards (Notion/Linear/Jira), not just those assigned to you", false)
   .option("--github-mine", "also pull open GitHub issues assigned to you in --repo", false)
   .option("--notion-db <id>", "Notion database id to also pull tickets from")
+  .option("--notion-assignee-id <id>", "Your Notion user id, for shared/workspace-owned integration tokens that can't auto-detect it")
   .option("--linear", "also pull tickets from Linear (uses LINEAR_API_KEY)", false)
   .option("--linear-team <key>", "restrict Linear to one team key, e.g. ENG")
   .option("--jira-project <key>", "pull tickets from this Jira project (uses JIRA_BASE_URL/JIRA_EMAIL/JIRA_API_TOKEN)")
@@ -59,6 +60,7 @@ program
   .option("--all", "pull every ticket on shared boards (Notion/Linear/Jira), not just those assigned to you", false)
   .option("--github-mine", "also pull open GitHub issues assigned to you in --repo", false)
   .option("--notion-db <id>", "Notion database id to also pull tickets from")
+  .option("--notion-assignee-id <id>", "Your Notion user id, for shared/workspace-owned integration tokens that can't auto-detect it")
   .option("--linear", "also pull tickets from Linear (uses LINEAR_API_KEY)", false)
   .option("--linear-team <key>", "restrict Linear to one team key, e.g. ENG")
   .option("--jira-project <key>", "pull tickets from this Jira project (uses JIRA_BASE_URL/JIRA_EMAIL/JIRA_API_TOKEN)")
@@ -273,6 +275,7 @@ async function resolvePlan(
     all?: boolean;
     githubMine?: boolean;
     notionDb?: string;
+    notionAssigneeId?: string;
     linear?: boolean;
     linearTeam?: string;
     jiraProject?: string;
@@ -286,7 +289,9 @@ async function resolvePlan(
     base: opts.base,
     all: opts.all,
     github: { mine: opts.githubMine },
-    notion: opts.notionDb ? { databaseId: opts.notionDb } : undefined,
+    notion: opts.notionDb
+      ? { databaseId: opts.notionDb, assigneeUserId: opts.notionAssigneeId }
+      : undefined,
     linear: opts.linear ? { teamKey: opts.linearTeam } : undefined,
     jira: opts.jiraProject || opts.jiraJql ? { project: opts.jiraProject, jql: opts.jiraJql } : undefined,
   });

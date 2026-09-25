@@ -43,6 +43,13 @@ const ticketSourceInputSchema = {
     ),
   githubMine: z.boolean().default(false).describe("Also pull open GitHub issues assigned to you in `repo`"),
   notionDatabaseId: z.string().optional().describe("Notion database id to also pull tickets from"),
+  notionAssigneeId: z
+    .string()
+    .optional()
+    .describe(
+      "Your Notion user id. Only needed for shared/workspace-owned Notion integration tokens, where " +
+        "delegAItor can't auto-detect which teammate is running it.",
+    ),
   linear: z.boolean().default(false).describe("Also pull tickets from Linear (uses LINEAR_API_KEY)"),
   linearTeamKey: z.string().optional().describe("Restrict Linear to one team key, e.g. ENG"),
   jiraProject: z
@@ -61,6 +68,7 @@ async function resolvePlan(args: {
   all?: boolean;
   githubMine?: boolean;
   notionDatabaseId?: string;
+  notionAssigneeId?: string;
   linear?: boolean;
   linearTeamKey?: string;
   jiraProject?: string;
@@ -73,7 +81,9 @@ async function resolvePlan(args: {
     base: args.base,
     all: args.all,
     github: { mine: args.githubMine },
-    notion: args.notionDatabaseId ? { databaseId: args.notionDatabaseId } : undefined,
+    notion: args.notionDatabaseId
+      ? { databaseId: args.notionDatabaseId, assigneeUserId: args.notionAssigneeId }
+      : undefined,
     linear: args.linear ? { teamKey: args.linearTeamKey } : undefined,
     jira: args.jiraProject || args.jiraJql ? { project: args.jiraProject, jql: args.jiraJql } : undefined,
   });
