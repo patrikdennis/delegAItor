@@ -241,7 +241,15 @@ whatever account it's already authenticated as.
 
    # Every open issue assigned to you in owner/repo:
    delegaitor plan --repo owner/repo --github-mine
+
+   # Also include each issue's comment thread as extra context for the agent:
+   delegaitor plan --repo owner/repo --github-mine --github-comments
    ```
+5. **Context passed to the agent**: by default only the issue title and
+   body/description are included in the prompt. Pass `--github-comments`
+   to also fetch and include the full comment thread (an extra `gh` call
+   per issue, so it's opt-in) — useful when the real spec/discussion
+   happened in comments rather than the original issue body.
 
 If `gh` isn't authenticated, `delegaitor` will surface `gh`'s own auth
 error — run `gh auth status` to check.
@@ -338,17 +346,31 @@ This token is scoped to you personally (like a PAT), so the default
    - Title property: defaults to `Name`.
    - Status property: defaults to `Status` (a Select property).
    - Assignee property: defaults to `Assignee` (a Person property).
-   - If your database uses different names, there's currently no CLI flag
-     for this — call `notionTicketSource()` directly from
-     `packages/core/src/tickets/notion.ts` with a `properties: {...}`
+   - If your database uses different names for these three, there's
+     currently no CLI flag for them — call `notionTicketSource()` directly
+     from `packages/core/src/tickets/notion.ts` with a `properties: {...}`
      override (e.g. `{ title: "Task", assignee: "Owner" }`), or add CLI
      flags yourself (`--notion-title-prop`, etc.) as a small PR.
-3. **Export the token and preview** (no worktrees/agents created yet):
+3. **Context passed to the agent**: by default delegAItor fetches each
+   page's actual **body content** — the paragraphs/headings/bullet lists
+   written below the title and properties, the same text you see
+   scrolling down the page — and includes it in the agent's prompt. This
+   needs no configuration and works out of the box; if your board also
+   has a dedicated rich-text database *property* used for specs/details
+   (a column, not page content), point delegAItor at it too with
+   `--notion-body-prop <name>`:
+   ```bash
+   delegaitor plan --notion-db <database-id> --notion-body-prop "Spec" --repo owner/repo
+   ```
+   Both are appended together when both are present. To skip fetching
+   page content entirely (fewer API calls, useful for very large
+   databases), pass `--notion-no-page-content`.
+4. **Export the token and preview** (no worktrees/agents created yet):
    ```bash
    export NOTION_API_KEY=<your token from option A, B, or C>
    delegaitor plan --notion-db <database-id> --repo owner/repo
    ```
-4. **Restrict to specific board columns/stages** with `--notion-status`
+5. **Restrict to specific board columns/stages** with `--notion-status`
    (recommended — otherwise every status, including Done, is pulled): pass
    a comma-separated list matching your Status column's values exactly,
    e.g. if your board's "ready to work on" columns are "Not started" and
@@ -359,12 +381,12 @@ This token is scoped to you personally (like a PAT), so the default
    Every team/board names these differently ("To do", "Ready", "Backlog",
    etc.), so there's no built-in default — check the actual values in your
    Notion database's Status column and use those exact strings.
-5. **If it resolves 0 tickets but you expect some**, check in this order:
+6. **If it resolves 0 tickets but you expect some**, check in this order:
    - Option B only: the integration is actually connected to that
      database (its step 4).
    - Your property names match the defaults, or you've supplied overrides
      (step 2 above).
-   - Your `--notion-status` values (step 4 above) exactly match the
+   - Your `--notion-status` values (step 5 above) exactly match the
      Status column's text, including capitalization.
    - The shared-token gotcha below — the most common cause when a whole
      team uses one Internal-integration secret (Option B).
