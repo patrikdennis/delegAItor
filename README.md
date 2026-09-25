@@ -75,10 +75,16 @@ If a session was already open before you registered the server, restart it
 The `ticket-worker` custom agent (used by dispatched Copilot sessions) is
 installed at user scope: `~/.copilot/agents/ticket-worker.md`. Claude
 sessions get equivalent instructions inline in the generated prompt, so no
-separate subagent profile is required. If that file is missing (e.g. you
-copied the repo to a new machine), copy it back into place from
-`packages/cli`'s generated prompt templates or re-run whatever setup step
-originally created it in your environment.
+separate subagent profile is required. A tracked copy of this file lives at
+`packages/cli/templates/ticket-worker.md` — if `~/.copilot/agents/ticket-worker.md`
+is missing or out of date (e.g. you copied the repo to a new machine, or the
+`mcp-servers.delegaitor` block is missing its required `command`/`args`
+fields), copy the template back into place:
+
+```bash
+mkdir -p ~/.copilot/agents
+cp packages/cli/templates/ticket-worker.md ~/.copilot/agents/ticket-worker.md
+```
 
 ## CLI usage
 
