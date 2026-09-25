@@ -36,9 +36,12 @@ program
   .option("--base <ref>", "default base branch", "main")
   .option("--all", "pull every ticket on shared boards (Notion/Linear/Jira), not just those assigned to you", false)
   .option("--github-mine", "also pull open GitHub issues assigned to you in --repo", false)
+  .option("--github-comments", "also fetch each GitHub issue's comment thread as extra ticket context", false)
   .option("--notion-db <id>", "Notion database id to also pull tickets from")
   .option("--notion-assignee-id <id>", "Your Notion user id, for shared/workspace-owned integration tokens that can't auto-detect it")
   .option("--notion-status <statuses>", "comma-separated Status values to delegate, exactly as they appear on your board (e.g. \"Not started,Backlog\"); default pulls every status")
+  .option("--notion-body-prop <name>", "Notion rich-text property to use as ticket body/spec (in addition to page content), e.g. \"Spec\"")
+  .option("--notion-no-page-content", "skip fetching each Notion page's body content (paragraphs/lists below the properties); only use --notion-body-prop if set", false)
   .option("--linear", "also pull tickets from Linear (uses LINEAR_API_KEY)", false)
   .option("--linear-team <key>", "restrict Linear to one team key, e.g. ENG")
   .option("--linear-status <statuses>", "comma-separated workflow state names to delegate, exactly as they appear on your team's board; default is any non-completed/canceled state")
@@ -62,9 +65,12 @@ program
   .option("--base <ref>", "default base branch", "main")
   .option("--all", "pull every ticket on shared boards (Notion/Linear/Jira), not just those assigned to you", false)
   .option("--github-mine", "also pull open GitHub issues assigned to you in --repo", false)
+  .option("--github-comments", "also fetch each GitHub issue's comment thread as extra ticket context", false)
   .option("--notion-db <id>", "Notion database id to also pull tickets from")
   .option("--notion-assignee-id <id>", "Your Notion user id, for shared/workspace-owned integration tokens that can't auto-detect it")
   .option("--notion-status <statuses>", "comma-separated Status values to delegate, exactly as they appear on your board (e.g. \"Not started,Backlog\"); default pulls every status")
+  .option("--notion-body-prop <name>", "Notion rich-text property to use as ticket body/spec (in addition to page content), e.g. \"Spec\"")
+  .option("--notion-no-page-content", "skip fetching each Notion page's body content (paragraphs/lists below the properties); only use --notion-body-prop if set", false)
   .option("--linear", "also pull tickets from Linear (uses LINEAR_API_KEY)", false)
   .option("--linear-team <key>", "restrict Linear to one team key, e.g. ENG")
   .option("--linear-status <statuses>", "comma-separated workflow state names to delegate, exactly as they appear on your team's board; default is any non-completed/canceled state")
@@ -300,9 +306,12 @@ async function resolvePlan(
     base: string;
     all?: boolean;
     githubMine?: boolean;
+    githubComments?: boolean;
     notionDb?: string;
     notionAssigneeId?: string;
     notionStatus?: string;
+    notionBodyProp?: string;
+    notionNoPageContent?: boolean;
     linear?: boolean;
     linearTeam?: string;
     linearStatus?: string;
@@ -317,12 +326,14 @@ async function resolvePlan(
     repoPath: opts.repoPath,
     base: opts.base,
     all: opts.all,
-    github: { mine: opts.githubMine },
+    github: { mine: opts.githubMine, comments: opts.githubComments },
     notion: opts.notionDb
       ? {
           databaseId: opts.notionDb,
           assigneeUserId: opts.notionAssigneeId,
           readyStatuses: parseStatusList(opts.notionStatus),
+          properties: opts.notionBodyProp ? { body: opts.notionBodyProp } : undefined,
+          includePageContent: !opts.notionNoPageContent,
         }
       : undefined,
     linear: opts.linear

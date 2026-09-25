@@ -42,6 +42,10 @@ const ticketSourceInputSchema = {
         "Explicit ticket titles/ids/URLs in `text` always override this filter.",
     ),
   githubMine: z.boolean().default(false).describe("Also pull open GitHub issues assigned to you in `repo`"),
+  githubComments: z
+    .boolean()
+    .default(false)
+    .describe("Also fetch each GitHub issue's comment thread and include it as ticket context"),
   notionDatabaseId: z.string().optional().describe("Notion database id to also pull tickets from"),
   notionAssigneeId: z
     .string()
@@ -57,6 +61,20 @@ const ticketSourceInputSchema = {
       "Status values to delegate, exactly as they appear on your board's Status column (e.g. " +
         '["Not started", "Backlog"]). Board columns are named however each team likes, so there\'s no ' +
         "fixed default — omit to pull every status.",
+    ),
+  notionBodyProp: z
+    .string()
+    .optional()
+    .describe(
+      "Notion rich-text property to use as extra ticket body/spec (in addition to page content), e.g. \"Spec\".",
+    ),
+  notionIncludePageContent: z
+    .boolean()
+    .default(true)
+    .describe(
+      "Fetch each Notion page's actual body content (the paragraphs/lists written below the " +
+        "properties — the same text visible scrolling down the page) and include it as ticket context. " +
+        "Set to false to skip this and rely solely on notionBodyProp.",
     ),
   linear: z.boolean().default(false).describe("Also pull tickets from Linear (uses LINEAR_API_KEY)"),
   linearTeamKey: z.string().optional().describe("Restrict Linear to one team key, e.g. ENG"),
@@ -89,9 +107,12 @@ async function resolvePlan(args: {
   base?: string;
   all?: boolean;
   githubMine?: boolean;
+  githubComments?: boolean;
   notionDatabaseId?: string;
   notionAssigneeId?: string;
   notionStatuses?: string[];
+  notionBodyProp?: string;
+  notionIncludePageContent?: boolean;
   linear?: boolean;
   linearTeamKey?: string;
   linearStatuses?: string[];
@@ -105,12 +126,14 @@ async function resolvePlan(args: {
     repoPath: args.repoPath,
     base: args.base,
     all: args.all,
-    github: { mine: args.githubMine },
+    github: { mine: args.githubMine, comments: args.githubComments },
     notion: args.notionDatabaseId
       ? {
           databaseId: args.notionDatabaseId,
           assigneeUserId: args.notionAssigneeId,
           readyStatuses: args.notionStatuses,
+          properties: args.notionBodyProp ? { body: args.notionBodyProp } : undefined,
+          includePageContent: args.notionIncludePageContent,
         }
       : undefined,
     linear: args.linear ? { teamKey: args.linearTeamKey, stateNames: args.linearStatuses } : undefined,
