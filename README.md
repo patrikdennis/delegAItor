@@ -248,31 +248,92 @@ error — run `gh auth status` to check.
 
 ### Setting up Notion
 
-1. **Create an integration** (this is what generates your API key):
-   - Go to [notion.so/my-integrations](https://www.notion.so/my-integrations)
-     (log in to your Notion workspace first).
-   - Click **New integration**.
-   - Give it a name (e.g. "delegAItor"), select the workspace it belongs
-     to, and under **Capabilities** make sure **Read content** is checked
-     (you don't need write/insert capabilities for delegAItor).
-   - Click **Submit**. On the next screen, copy the **Internal Integration
-     Secret** — this string (starts with `secret_` or `ntn_`) is your
-     `NOTION_API_KEY`. Keep it private; treat it like a password.
-2. **Share your ticket database with the integration** (the single most
-   common setup mistake — without this step every query silently returns
-   zero results, not an error):
-   - Open the Notion database you use as your ticket board.
-   - Click the `•••` menu in the top-right corner of the page.
-   - Scroll to **Connections** (may be called "Add connections" on older
-     Notion versions) → search for and select the integration you just
-     created.
-   - Confirm it now appears listed under that page's connections.
-3. **Get the database id**: open the database as a full page and copy the
+delegAItor talks to Notion purely over `Authorization: Bearer <token>` — it
+doesn't care whether that token is a Personal Access Token, an Internal
+integration secret, or an OAuth access token; all three work identically as
+`NOTION_API_KEY`. Workspace admins can restrict who's allowed to create
+each kind, so **try these in order** and use whichever one your workspace
+actually lets you create:
+
+#### Option A — Personal Access Token (try this first)
+
+The simplest option: acts as *you*, doesn't require sharing pages with a
+bot, and doesn't require workspace-owner permissions (just workspace
+membership, subject to admin policy).
+
+1. Go to [notion.so/my-integrations](https://www.notion.so/my-integrations)
+   → **Developer portal** → find **Personal access tokens** (or go directly
+   to [notion.so/developers/tokens](https://www.notion.so/developers/tokens)).
+2. Click **Create token** (or similar), give it a name, choose the
+   workspace, and check the **Notion API** capability.
+3. Copy the token immediately — Notion won't show it again. This is your
+   `NOTION_API_KEY`.
+4. Skip straight to "Get the database id" below — a PAT already has access
+   to everything you personally can see, so there's no separate
+   page-sharing step.
+
+If this option is greyed out or errors with a permissions message, your
+workspace admin has restricted PAT creation with API access — try Option B
+or C instead (or ask them to allow it, under **Settings → Connections** in
+Notion, "Who can create PATs").
+
+#### Option B — Internal integration (if your workspace allows it)
+
+1. At [notion.so/my-integrations](https://www.notion.so/my-integrations),
+   click **New integration** and choose the **API token** authentication
+   method (not OAuth).
+2. Give it a name (e.g. "delegAItor"), select the workspace, and under
+   **Capabilities** make sure **Read content** is checked.
+3. Click **Submit** and copy the **Internal Integration Secret** — this is
+   your `NOTION_API_KEY`.
+4. **Share your ticket database with it** (skip this and every query
+   silently returns zero results, not an error): open the database →
+   `•••` menu (top-right) → **Connections** → search for and select the
+   integration you just created.
+
+If the "API token" option is greyed out with *"You don't have permission
+to create internal connections in this workspace"*, your workspace admin
+has disabled it — use Option A or C instead.
+
+#### Option C — OAuth public connection (fallback if A and B are both blocked)
+
+Some workspaces restrict both PAT creation and internal integrations,
+leaving OAuth as the only remaining path. It's more setup, but a helper
+script in this repo automates the whole exchange:
+
+1. At [notion.so/my-integrations](https://www.notion.so/my-integrations),
+   click **New integration**, choose **OAuth** as the authentication
+   method, set **Installable in** to "Any workspace" (or your own if
+   listed), and set a **Redirect URI** of `http://localhost:3000/callback`
+   (or any local port you like — just keep it consistent below).
+2. Click **Create connection**, then open its **Configuration** tab and
+   copy the **OAuth Client ID** and **OAuth Client Secret**.
+3. Run the helper script (no extra dependencies — plain Node):
+   ```bash
+   node scripts/notion-oauth-login.mjs \
+     --client-id <your-client-id> \
+     --client-secret <your-client-secret> \
+     --redirect-uri http://localhost:3000/callback
+   ```
+4. It opens your browser to Notion's authorization page — log in, pick
+   your workspace, and **select which pages/databases to grant access to**
+   (this replaces the "share with integration" step from Option B).
+5. After you approve, the script prints your access token — export it:
+   ```bash
+   export NOTION_API_KEY=<printed access token>
+   ```
+
+This token is scoped to you personally (like a PAT), so the default
+"assigned to me" filter works automatically with no extra setup.
+
+#### Once you have a token (any option above)
+
+1. **Get the database id**: open the database as a full page and copy the
    id out of the URL:
    `https://www.notion.so/<workspace>/<DATABASE_ID>?v=<view_id>` — the
    `DATABASE_ID` is a 32-character hex string (dashes optional, delegAItor
    accepts either form).
-4. **Check your database's property names** against delegAItor's defaults,
+2. **Check your database's property names** against delegAItor's defaults,
    since Notion schemas are entirely user-defined:
    - Title property: defaults to `Name`.
    - Status property: defaults to `Status` (a Select property).
@@ -282,36 +343,42 @@ error — run `gh auth status` to check.
      `packages/core/src/tickets/notion.ts` with a `properties: {...}`
      override (e.g. `{ title: "Task", assignee: "Owner" }`), or add CLI
      flags yourself (`--notion-title-prop`, etc.) as a small PR.
-5. **Export the key and preview** (no worktrees/agents created yet):
+3. **Export the token and preview** (no worktrees/agents created yet):
    ```bash
-   export NOTION_API_KEY=secret_xxx
+   export NOTION_API_KEY=<your token from option A, B, or C>
    delegaitor plan --notion-db <database-id> --repo owner/repo
    ```
-6. **If it resolves 0 tickets but you expect some**, check in this order:
-   - The integration is actually connected to that database (step 2).
+4. **If it resolves 0 tickets but you expect some**, check in this order:
+   - Option B only: the integration is actually connected to that
+     database (its step 4).
    - Your property names match the defaults, or you've supplied overrides
-     (step 4).
-   - The assignee-resolution gotcha below — the most common cause when
-     using one integration token shared across a team.
+     (step 2 above).
+   - The shared-token gotcha below — the most common cause when a whole
+     team uses one Internal-integration secret (Option B).
    - Run with `--all` temporarily to confirm the database/connection
      itself works before debugging the assignee filter specifically:
      `delegaitor plan --notion-db <database-id> --all --repo owner/repo`.
 
-**Assignee resolution and the shared-token gotcha:** Notion API keys
-belong to an *integration* (a bot user), not to you personally, and the
+**Assignee resolution, and the one remaining gotcha:** PATs (Option A) and
+OAuth tokens (Option C) are inherently tied to you personally, so the
+default "assigned to me" filter always works automatically for them — no
+extra setup, no flags needed. Internal-integration secrets (Option B) are
+different: they belong to a *bot* user, not to you personally, and the
 Person property references real workspace members, not bots. delegAItor
-handles this automatically for a **personal integration** (one you created
-for your own use) by resolving the human owner behind the bot. If instead
-your whole team shares **one integration token**, there's no way for the
-API to tell which teammate is running it, so the default "assigned to me"
-filter would otherwise silently return nothing — pass your own Notion user
-id explicitly to fix it:
+resolves this automatically when the integration has a single personal
+owner (Notion tells us who that is). The one case it *can't* resolve
+automatically is when **your whole team shares one Internal-integration
+secret** — there's no API-level way to tell which teammate is running it,
+so the filter falls back to the bot's own id and silently returns zero
+tickets. Fix it by passing your own Notion user id explicitly:
 ```bash
 delegaitor dispatch --notion-db <database-id> --notion-assignee-id <your-notion-user-id> --repo owner/repo
 ```
 Find your Notion user id by opening any page you're already assigned to
 and reading the `people` property's `id` via the API, or by asking a
-teammate with workspace-admin access to look it up for you.
+teammate with workspace-admin access to look it up for you. (Switching
+that team to Option A or C sidesteps this entirely, since both are
+already scoped to one person.)
 
 ### Setting up Linear
 
