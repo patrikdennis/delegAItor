@@ -348,16 +348,29 @@ This token is scoped to you personally (like a PAT), so the default
    export NOTION_API_KEY=<your token from option A, B, or C>
    delegaitor plan --notion-db <database-id> --repo owner/repo
    ```
-4. **If it resolves 0 tickets but you expect some**, check in this order:
+4. **Restrict to specific board columns/stages** with `--notion-status`
+   (recommended — otherwise every status, including Done, is pulled): pass
+   a comma-separated list matching your Status column's values exactly,
+   e.g. if your board's "ready to work on" columns are "Not started" and
+   "Backlog":
+   ```bash
+   delegaitor plan --notion-db <database-id> --notion-status "Not started,Backlog" --repo owner/repo
+   ```
+   Every team/board names these differently ("To do", "Ready", "Backlog",
+   etc.), so there's no built-in default — check the actual values in your
+   Notion database's Status column and use those exact strings.
+5. **If it resolves 0 tickets but you expect some**, check in this order:
    - Option B only: the integration is actually connected to that
      database (its step 4).
    - Your property names match the defaults, or you've supplied overrides
      (step 2 above).
+   - Your `--notion-status` values (step 4 above) exactly match the
+     Status column's text, including capitalization.
    - The shared-token gotcha below — the most common cause when a whole
      team uses one Internal-integration secret (Option B).
    - Run with `--all` temporarily to confirm the database/connection
-     itself works before debugging the assignee filter specifically:
-     `delegaitor plan --notion-db <database-id> --all --repo owner/repo`.
+     itself works before debugging the assignee/status filters
+     specifically: `delegaitor plan --notion-db <database-id> --all --repo owner/repo`.
 
 **Assignee resolution, and the one remaining gotcha:** PATs (Option A) and
 OAuth tokens (Option C) are inherently tied to you personally, so the
@@ -400,7 +413,16 @@ already scoped to one person.)
 3. Because a personal API key is tied to your own Linear account, the
    default "assigned to me" filter (`assignee.isMe`) works automatically —
    no extra id lookup needed, unlike Notion.
-4. This adapter has not been exercised against a live Linear account in
+4. **Restrict to specific workflow states** with `--linear-status`
+   (optional — default is any non-completed/non-canceled state): pass a
+   comma-separated list of state names exactly as they appear on your
+   team's board, e.g.:
+   ```bash
+   delegaitor plan --linear --linear-status "Backlog,Todo" --repo owner/repo
+   ```
+   Every team can rename/reorder its own workflow states, so check yours
+   under the team's **Settings → Workflow** page for the exact names.
+5. This adapter has not been exercised against a live Linear account in
    this codebase (no test account was available while building it) — the
    query follows Linear's documented GraphQL schema, but **run `plan`
    first** and inspect the output before `dispatch`. If it errors, the
@@ -430,7 +452,16 @@ already scoped to one person.)
 4. `assignee = currentUser()` uses whichever account the API token/email
    pair belongs to, so "assigned to me" works automatically without any
    extra id lookup.
-5. **Safety guard**: passing `--all` without `--jira-project` throws
+5. **Restrict to specific statuses** with `--jira-status` (optional —
+   default is `statusCategory != Done`): pass a comma-separated list of
+   status names exactly as they appear on your board, e.g.:
+   ```bash
+   delegaitor plan --jira-project ENG --jira-status "Selected for Development,In Refinement" --repo owner/repo
+   ```
+   Jira workflows are fully custom per-project, so check your project's
+   board columns/workflow statuses for the exact names. Ignored if you
+   also pass `--jira-jql`.
+6. **Safety guard**: passing `--all` without `--jira-project` throws
    instead of silently querying your entire Jira instance — you must
    either keep the default assignee scoping, or supply a project when
    opting out of it. Use `--jira-jql` instead if you need a fully custom
