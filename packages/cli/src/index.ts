@@ -38,10 +38,13 @@ program
   .option("--github-mine", "also pull open GitHub issues assigned to you in --repo", false)
   .option("--notion-db <id>", "Notion database id to also pull tickets from")
   .option("--notion-assignee-id <id>", "Your Notion user id, for shared/workspace-owned integration tokens that can't auto-detect it")
+  .option("--notion-status <statuses>", "comma-separated Status values to delegate, exactly as they appear on your board (e.g. \"Not started,Backlog\"); default pulls every status")
   .option("--linear", "also pull tickets from Linear (uses LINEAR_API_KEY)", false)
   .option("--linear-team <key>", "restrict Linear to one team key, e.g. ENG")
+  .option("--linear-status <statuses>", "comma-separated workflow state names to delegate, exactly as they appear on your team's board; default is any non-completed/canceled state")
   .option("--jira-project <key>", "pull tickets from this Jira project (uses JIRA_BASE_URL/JIRA_EMAIL/JIRA_API_TOKEN)")
   .option("--jira-jql <jql>", "custom JQL, overrides the default mine/project query")
+  .option("--jira-status <statuses>", "comma-separated status names to delegate, exactly as they appear on your board; default is statusCategory != Done")
   .action(async (text, opts) => {
     const rawInput = await readInput(text, opts.file, opts);
     const plan = await resolvePlan(rawInput, opts);
@@ -61,10 +64,13 @@ program
   .option("--github-mine", "also pull open GitHub issues assigned to you in --repo", false)
   .option("--notion-db <id>", "Notion database id to also pull tickets from")
   .option("--notion-assignee-id <id>", "Your Notion user id, for shared/workspace-owned integration tokens that can't auto-detect it")
+  .option("--notion-status <statuses>", "comma-separated Status values to delegate, exactly as they appear on your board (e.g. \"Not started,Backlog\"); default pulls every status")
   .option("--linear", "also pull tickets from Linear (uses LINEAR_API_KEY)", false)
   .option("--linear-team <key>", "restrict Linear to one team key, e.g. ENG")
+  .option("--linear-status <statuses>", "comma-separated workflow state names to delegate, exactly as they appear on your team's board; default is any non-completed/canceled state")
   .option("--jira-project <key>", "pull tickets from this Jira project (uses JIRA_BASE_URL/JIRA_EMAIL/JIRA_API_TOKEN)")
   .option("--jira-jql <jql>", "custom JQL, overrides the default mine/project query")
+  .option("--jira-status <statuses>", "comma-separated status names to delegate, exactly as they appear on your board; default is statusCategory != Done")
   .option("-y, --yes", "skip confirmation prompt")
   .action(async (text, opts) => {
     const rawInput = await readInput(text, opts.file, opts);
@@ -296,10 +302,13 @@ async function resolvePlan(
     githubMine?: boolean;
     notionDb?: string;
     notionAssigneeId?: string;
+    notionStatus?: string;
     linear?: boolean;
     linearTeam?: string;
+    linearStatus?: string;
     jiraProject?: string;
     jiraJql?: string;
+    jiraStatus?: string;
   },
 ): Promise<ExecutionPlan> {
   return resolveExecutionPlan(input, {
@@ -310,11 +319,35 @@ async function resolvePlan(
     all: opts.all,
     github: { mine: opts.githubMine },
     notion: opts.notionDb
-      ? { databaseId: opts.notionDb, assigneeUserId: opts.notionAssigneeId }
+      ? {
+          databaseId: opts.notionDb,
+          assigneeUserId: opts.notionAssigneeId,
+          readyStatuses: parseStatusList(opts.notionStatus),
+        }
       : undefined,
-    linear: opts.linear ? { teamKey: opts.linearTeam } : undefined,
-    jira: opts.jiraProject || opts.jiraJql ? { project: opts.jiraProject, jql: opts.jiraJql } : undefined,
+    linear: opts.linear
+      ? { teamKey: opts.linearTeam, stateNames: parseStatusList(opts.linearStatus) }
+      : undefined,
+    jira:
+      opts.jiraProject || opts.jiraJql
+        ? { project: opts.jiraProject, jql: opts.jiraJql, statuses: parseStatusList(opts.jiraStatus) }
+        : undefined,
   });
+}
+
+/**
+ * Board columns/statuses are named however each team likes ("Backlog",
+ * "Not started", "To do", ...), so status filters are taken as a raw
+ * comma-separated list rather than a fixed enum, e.g.
+ * `--notion-status "Not started,Backlog"`.
+ */
+function parseStatusList(raw: string | undefined): string[] | undefined {
+  if (!raw) return undefined;
+  const values = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return values.length ? values : undefined;
 }
 
 function repoIdForTicket(ticketId: string): string {

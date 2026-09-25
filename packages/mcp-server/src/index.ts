@@ -50,13 +50,35 @@ const ticketSourceInputSchema = {
       "Your Notion user id. Only needed for shared/workspace-owned Notion integration tokens, where " +
         "delegAItor can't auto-detect which teammate is running it.",
     ),
+  notionStatuses: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Status values to delegate, exactly as they appear on your board's Status column (e.g. " +
+        '["Not started", "Backlog"]). Board columns are named however each team likes, so there\'s no ' +
+        "fixed default — omit to pull every status.",
+    ),
   linear: z.boolean().default(false).describe("Also pull tickets from Linear (uses LINEAR_API_KEY)"),
   linearTeamKey: z.string().optional().describe("Restrict Linear to one team key, e.g. ENG"),
+  linearStatuses: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Workflow state names to delegate, exactly as they appear on your team's board (e.g. " +
+        '["Backlog", "Todo"]). Omit to pull any non-completed/non-canceled state.',
+    ),
   jiraProject: z
     .string()
     .optional()
     .describe("Pull tickets from this Jira project (uses JIRA_BASE_URL/JIRA_EMAIL/JIRA_API_TOKEN)"),
   jiraJql: z.string().optional().describe("Custom JQL, overrides the default mine/project query"),
+  jiraStatuses: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Status names to delegate, exactly as they appear on your board (e.g. [\"Selected for Development\"]). " +
+        "Omit to use the default statusCategory != Done. Ignored if jiraJql is supplied.",
+    ),
 };
 
 async function resolvePlan(args: {
@@ -69,10 +91,13 @@ async function resolvePlan(args: {
   githubMine?: boolean;
   notionDatabaseId?: string;
   notionAssigneeId?: string;
+  notionStatuses?: string[];
   linear?: boolean;
   linearTeamKey?: string;
+  linearStatuses?: string[];
   jiraProject?: string;
   jiraJql?: string;
+  jiraStatuses?: string[];
 }): Promise<ExecutionPlan> {
   return resolveExecutionPlan(args.text, {
     defaultAgent: args.agent,
@@ -82,10 +107,17 @@ async function resolvePlan(args: {
     all: args.all,
     github: { mine: args.githubMine },
     notion: args.notionDatabaseId
-      ? { databaseId: args.notionDatabaseId, assigneeUserId: args.notionAssigneeId }
+      ? {
+          databaseId: args.notionDatabaseId,
+          assigneeUserId: args.notionAssigneeId,
+          readyStatuses: args.notionStatuses,
+        }
       : undefined,
-    linear: args.linear ? { teamKey: args.linearTeamKey } : undefined,
-    jira: args.jiraProject || args.jiraJql ? { project: args.jiraProject, jql: args.jiraJql } : undefined,
+    linear: args.linear ? { teamKey: args.linearTeamKey, stateNames: args.linearStatuses } : undefined,
+    jira:
+      args.jiraProject || args.jiraJql
+        ? { project: args.jiraProject, jql: args.jiraJql, statuses: args.jiraStatuses }
+        : undefined,
   });
 }
 
