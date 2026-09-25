@@ -62,6 +62,10 @@ const ticketSourceInputSchema = {
         '["Not started", "Backlog"]). Board columns are named however each team likes, so there\'s no ' +
         "fixed default — omit to pull every status.",
     ),
+  notionTitleProp: z
+    .string()
+    .optional()
+    .describe('Notion title property name, if not "Name" (e.g. "Task").'),
   notionBodyProp: z
     .string()
     .optional()
@@ -111,6 +115,7 @@ async function resolvePlan(args: {
   notionDatabaseId?: string;
   notionAssigneeId?: string;
   notionStatuses?: string[];
+  notionTitleProp?: string;
   notionBodyProp?: string;
   notionIncludePageContent?: boolean;
   linear?: boolean;
@@ -132,7 +137,10 @@ async function resolvePlan(args: {
           databaseId: args.notionDatabaseId,
           assigneeUserId: args.notionAssigneeId,
           readyStatuses: args.notionStatuses,
-          properties: args.notionBodyProp ? { body: args.notionBodyProp } : undefined,
+          properties:
+            args.notionTitleProp || args.notionBodyProp
+              ? { title: args.notionTitleProp, body: args.notionBodyProp }
+              : undefined,
           includePageContent: args.notionIncludePageContent,
         }
       : undefined,

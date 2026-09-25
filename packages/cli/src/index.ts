@@ -40,6 +40,7 @@ program
   .option("--notion-db <id>", "Notion database id to also pull tickets from")
   .option("--notion-assignee-id <id>", "Your Notion user id, for shared/workspace-owned integration tokens that can't auto-detect it")
   .option("--notion-status <statuses>", "comma-separated Status values to delegate, exactly as they appear on your board (e.g. \"Not started,Backlog\"); default pulls every status")
+  .option("--notion-title-prop <name>", "Notion title property name, if not \"Name\" (e.g. \"Task\")")
   .option("--notion-body-prop <name>", "Notion rich-text property to use as ticket body/spec (in addition to page content), e.g. \"Spec\"")
   .option("--notion-no-page-content", "skip fetching each Notion page's body content (paragraphs/lists below the properties); only use --notion-body-prop if set", false)
   .option("--linear", "also pull tickets from Linear (uses LINEAR_API_KEY)", false)
@@ -69,6 +70,7 @@ program
   .option("--notion-db <id>", "Notion database id to also pull tickets from")
   .option("--notion-assignee-id <id>", "Your Notion user id, for shared/workspace-owned integration tokens that can't auto-detect it")
   .option("--notion-status <statuses>", "comma-separated Status values to delegate, exactly as they appear on your board (e.g. \"Not started,Backlog\"); default pulls every status")
+  .option("--notion-title-prop <name>", "Notion title property name, if not \"Name\" (e.g. \"Task\")")
   .option("--notion-body-prop <name>", "Notion rich-text property to use as ticket body/spec (in addition to page content), e.g. \"Spec\"")
   .option("--notion-no-page-content", "skip fetching each Notion page's body content (paragraphs/lists below the properties); only use --notion-body-prop if set", false)
   .option("--linear", "also pull tickets from Linear (uses LINEAR_API_KEY)", false)
@@ -310,6 +312,7 @@ async function resolvePlan(
     notionDb?: string;
     notionAssigneeId?: string;
     notionStatus?: string;
+    notionTitleProp?: string;
     notionBodyProp?: string;
     notionNoPageContent?: boolean;
     linear?: boolean;
@@ -332,7 +335,10 @@ async function resolvePlan(
           databaseId: opts.notionDb,
           assigneeUserId: opts.notionAssigneeId,
           readyStatuses: parseStatusList(opts.notionStatus),
-          properties: opts.notionBodyProp ? { body: opts.notionBodyProp } : undefined,
+          properties:
+            opts.notionTitleProp || opts.notionBodyProp
+              ? { title: opts.notionTitleProp, body: opts.notionBodyProp }
+              : undefined,
           includePageContent: !opts.notionNoPageContent,
         }
       : undefined,
