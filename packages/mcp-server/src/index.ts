@@ -72,6 +72,22 @@ const ticketSourceInputSchema = {
     .describe(
       "Notion rich-text property to use as extra ticket body/spec (in addition to page content), e.g. \"Spec\".",
     ),
+  notionProjectProp: z
+    .string()
+    .optional()
+    .describe(
+      "Notion property exposing a human-readable project/initiative name, used with notionProjects to " +
+        "scope one project on a shared multi-project board. A plain select/status property works " +
+        "directly; a relation to a separate Projects database only exposes an opaque id, so point this " +
+        "at a rollup property that surfaces the related project's title instead.",
+    ),
+  notionProjects: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Project/initiative names to delegate (requires notionProjectProp). Every workspace organizes " +
+        "projects differently, so there's no default — omit to pull tickets from every project.",
+    ),
   notionIncludePageContent: z
     .boolean()
     .default(true)
@@ -117,6 +133,8 @@ async function resolvePlan(args: {
   notionStatuses?: string[];
   notionTitleProp?: string;
   notionBodyProp?: string;
+  notionProjectProp?: string;
+  notionProjects?: string[];
   notionIncludePageContent?: boolean;
   linear?: boolean;
   linearTeamKey?: string;
@@ -137,9 +155,10 @@ async function resolvePlan(args: {
           databaseId: args.notionDatabaseId,
           assigneeUserId: args.notionAssigneeId,
           readyStatuses: args.notionStatuses,
+          projects: args.notionProjects,
           properties:
-            args.notionTitleProp || args.notionBodyProp
-              ? { title: args.notionTitleProp, body: args.notionBodyProp }
+            args.notionTitleProp || args.notionBodyProp || args.notionProjectProp
+              ? { title: args.notionTitleProp, body: args.notionBodyProp, project: args.notionProjectProp }
               : undefined,
           includePageContent: args.notionIncludePageContent,
         }

@@ -40,6 +40,8 @@ program
   .option("--notion-db <id>", "Notion database id to also pull tickets from")
   .option("--notion-assignee-id <id>", "Your Notion user id, for shared/workspace-owned integration tokens that can't auto-detect it")
   .option("--notion-status <statuses>", "comma-separated Status values to delegate, exactly as they appear on your board (e.g. \"Not started,Backlog\"); default pulls every status")
+  .option("--notion-project-prop <name>", "Notion property exposing a human-readable project/initiative name (e.g. a rollup surfacing a related Project relation's title), used with --notion-project")
+  .option("--notion-project <names>", "comma-separated project/initiative names to delegate (requires --notion-project-prop); every board organizes projects differently, so there's no default")
   .option("--notion-title-prop <name>", "Notion title property name, if not \"Name\" (e.g. \"Task\")")
   .option("--notion-body-prop <name>", "Notion rich-text property to use as ticket body/spec (in addition to page content), e.g. \"Spec\"")
   .option("--notion-no-page-content", "skip fetching each Notion page's body content (paragraphs/lists below the properties); only use --notion-body-prop if set", false)
@@ -70,6 +72,8 @@ program
   .option("--notion-db <id>", "Notion database id to also pull tickets from")
   .option("--notion-assignee-id <id>", "Your Notion user id, for shared/workspace-owned integration tokens that can't auto-detect it")
   .option("--notion-status <statuses>", "comma-separated Status values to delegate, exactly as they appear on your board (e.g. \"Not started,Backlog\"); default pulls every status")
+  .option("--notion-project-prop <name>", "Notion property exposing a human-readable project/initiative name (e.g. a rollup surfacing a related Project relation's title), used with --notion-project")
+  .option("--notion-project <names>", "comma-separated project/initiative names to delegate (requires --notion-project-prop); every board organizes projects differently, so there's no default")
   .option("--notion-title-prop <name>", "Notion title property name, if not \"Name\" (e.g. \"Task\")")
   .option("--notion-body-prop <name>", "Notion rich-text property to use as ticket body/spec (in addition to page content), e.g. \"Spec\"")
   .option("--notion-no-page-content", "skip fetching each Notion page's body content (paragraphs/lists below the properties); only use --notion-body-prop if set", false)
@@ -314,6 +318,8 @@ async function resolvePlan(
     notionStatus?: string;
     notionTitleProp?: string;
     notionBodyProp?: string;
+    notionProjectProp?: string;
+    notionProject?: string;
     notionNoPageContent?: boolean;
     linear?: boolean;
     linearTeam?: string;
@@ -335,9 +341,10 @@ async function resolvePlan(
           databaseId: opts.notionDb,
           assigneeUserId: opts.notionAssigneeId,
           readyStatuses: parseStatusList(opts.notionStatus),
+          projects: parseStatusList(opts.notionProject),
           properties:
-            opts.notionTitleProp || opts.notionBodyProp
-              ? { title: opts.notionTitleProp, body: opts.notionBodyProp }
+            opts.notionTitleProp || opts.notionBodyProp || opts.notionProjectProp
+              ? { title: opts.notionTitleProp, body: opts.notionBodyProp, project: opts.notionProjectProp }
               : undefined,
           includePageContent: !opts.notionNoPageContent,
         }
