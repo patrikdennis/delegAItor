@@ -36,8 +36,8 @@ export interface ResolveExecutionPlanOptions {
     NotionSourceOptions,
     "databaseId" | "properties" | "readyStatuses" | "apiKey" | "apiBaseUrl" | "assigneeUserId"
   >;
-  linear?: Pick<LinearSourceOptions, "apiKey" | "teamKey" | "apiUrl">;
-  jira?: Pick<JiraSourceOptions, "baseUrl" | "email" | "apiToken" | "project" | "jql">;
+  linear?: Pick<LinearSourceOptions, "apiKey" | "teamKey" | "apiUrl" | "stateNames">;
+  jira?: Pick<JiraSourceOptions, "baseUrl" | "email" | "apiToken" | "project" | "jql" | "statuses">;
 }
 
 /**

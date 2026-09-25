@@ -19,6 +19,14 @@ export interface JiraSourceOptions {
   onlyAssignedToMe?: boolean;
   /** Jira project key, e.g. "ENG". Required when onlyAssignedToMe is false. */
   project?: string;
+  /**
+   * Restrict to specific status names (e.g. ["Backlog", "Selected for
+   * Development"]), exactly as they appear on your board — Jira workflows
+   * are fully custom per-project, so there's no fixed "ready" set. When
+   * omitted, falls back to the built-in default of `statusCategory !=
+   * Done`. Ignored if a custom `jql` is supplied.
+   */
+  statuses?: string[];
   /** Full custom JQL; overrides the built-in default/mine query entirely. */
   jql?: string;
 }
@@ -59,7 +67,11 @@ export function jiraTicketSource(opts: JiraSourceOptions): TicketSource {
         const clauses: string[] = [];
         if (opts.project) clauses.push(`project = "${opts.project}"`);
         if (onlyAssignedToMe) clauses.push("assignee = currentUser()");
-        clauses.push("statusCategory != Done");
+        if (opts.statuses?.length) {
+          clauses.push(`status IN (${opts.statuses.map((s) => `"${s}"`).join(", ")})`);
+        } else {
+          clauses.push("statusCategory != Done");
+        }
         jql = clauses.join(" AND ");
       }
 

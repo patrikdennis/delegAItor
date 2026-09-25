@@ -17,6 +17,14 @@ export interface LinearSourceOptions {
    * false) pulls every non-done issue in scope instead.
    */
   onlyAssignedToMe?: boolean;
+  /**
+   * Restrict to specific workflow state names (e.g. ["Backlog", "Todo"]),
+   * exactly as they appear in your team's board — Linear lets every team
+   * rename/reorder its states, so there's no fixed "ready" set. When
+   * omitted, falls back to the built-in default of any non-completed,
+   * non-canceled state (state *type*, not name).
+   */
+  stateNames?: string[];
   /** Override for testing against a local mock server instead of api.linear.app. */
   apiUrl?: string;
 }
@@ -56,9 +64,9 @@ export function linearTicketSource(opts: LinearSourceOptions): TicketSource {
       const explicitSelection = wanted.length > 0;
       const onlyAssignedToMe = opts.onlyAssignedToMe ?? true;
 
-      const filter: Record<string, unknown> = {
-        state: { type: { nin: ["completed", "canceled"] } },
-      };
+      const filter: Record<string, unknown> = opts.stateNames?.length
+        ? { state: { name: { in: opts.stateNames } } }
+        : { state: { type: { nin: ["completed", "canceled"] } } };
       if (opts.teamKey) {
         filter.team = { key: { eq: opts.teamKey } };
       }
