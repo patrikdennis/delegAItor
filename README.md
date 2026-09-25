@@ -35,18 +35,50 @@ cd packages/cli && npm link          # delegaitor on PATH
 cd ../mcp-server && npm link         # delegaitor-mcp on PATH
 ```
 
-Register the MCP server so Claude/Copilot can call delegAItor tools
-directly instead of shelling out:
+Verify it worked:
 
 ```bash
+delegaitor --help
+delegaitor-mcp --version   # should print without error, then exit (it's a stdio server)
+```
+
+If `npm link` fails with a permissions error, either fix your global npm
+prefix (`npm config get prefix`) or run with a user-writable prefix, e.g.
+`npm config set prefix ~/.npm-global` and add `~/.npm-global/bin` to `PATH`.
+
+### Registering the MCP server (so Claude/Copilot can call delegAItor tools directly)
+
+This step is optional but recommended: without it, an agent can still run
+the `delegaitor` CLI via its shell tool, but registering the MCP server
+lets it call `delegaitor_plan`, `delegaitor_dispatch`, `delegaitor_lock_*`,
+etc. as native tool calls instead of shelling out, which most agents do
+more reliably.
+
+```bash
+# Copilot CLI:
 copilot mcp add delegaitor -- delegaitor-mcp
+
+# Claude Code (user scope, available in every project):
 claude mcp add -s user delegaitor -- delegaitor-mcp
 ```
+
+Verify each registered correctly:
+
+```bash
+copilot mcp list     # should show "delegaitor" as connected
+claude mcp list       # should show "delegaitor: ... - ✓ Connected"
+```
+
+If a session was already open before you registered the server, restart it
+— MCP servers are only picked up at session start.
 
 The `ticket-worker` custom agent (used by dispatched Copilot sessions) is
 installed at user scope: `~/.copilot/agents/ticket-worker.md`. Claude
 sessions get equivalent instructions inline in the generated prompt, so no
-separate subagent profile is required.
+separate subagent profile is required. If that file is missing (e.g. you
+copied the repo to a new machine), copy it back into place from
+`packages/cli`'s generated prompt templates or re-run whatever setup step
+originally created it in your environment.
 
 ## CLI usage
 
@@ -144,38 +176,210 @@ filesystem-level guarantee.
 If the `cmux` CLI is on PATH, `delegaitor dispatch` opens one
 `cmux new-workspace --cwd <worktree> --command <agent invocation>` per
 ticket and renames it to the ticket title. Without cmux, it falls back to a
-detached background process. A global cmux action is installed at
-`~/.config/cmux/cmux.json` (`delegaitor.dispatch` / `delegaitor.status`,
-also in the surface tab bar) — reload cmux config (Cmd+Shift+,) to pick it
-up.
+detached background process.
+
+**Setup** (only needed once):
+
+1. Make sure the `cmux` CLI is installed and on `PATH` — check with
+   `cmux --version`. If it's missing, install/build cmux per its own
+   project instructions; delegAItor doesn't bundle or install it.
+2. A global cmux action is installed at `~/.config/cmux/cmux.json`
+   (`delegaitor.dispatch` / `delegaitor.status`, also surfaced in the tab
+   bar). If that file doesn't already exist or was created before you set
+   up delegAItor, copy/merge the `delegaitor.*` action entries from this
+   repo's own `~/.config/cmux/cmux.json` example, or add them manually —
+   see cmux's config docs for the action schema.
+3. Reload cmux's config to pick up the change: `Cmd+Shift+,`, or fully
+   restart cmux — there is no `cmux reload-config` command in current
+   builds.
+4. Verify: run `delegaitor dispatch ...` from a terminal and confirm a new
+   cmux tab/workspace opens per ticket, titled with the ticket name.
+
+Without cmux at all, everything still works — dispatched sessions just run
+as detached background processes instead of separate tabs, and `delegaitor
+status` is your way to check on them instead of switching tabs.
 
 ## Ticket sources
 
 - **GitHub Issues** — via `gh issue view`, reusing your existing `gh` auth.
   Matches `#123` (uses `--repo`) and `owner/repo#123` anywhere in the input.
   Pass `--github-mine` to also pull every open issue assigned to you in
-  `--repo`.
+  `--repo`. See "Setting up GitHub" below.
 - **Markdown/plain text** — a `-`/`*` list; supports `repo:`/`base:` header
   lines, a per-line `[owner/repo]` override, and `(after <title>)` for
-  in-batch dependencies.
+  in-batch dependencies. No setup required.
 - **Notion** — set `NOTION_API_KEY` and pass `--notion-db <id>`; property
   names (title/status/repo/body/assignee) are configurable since Notion
   schemas are user-defined (see `packages/core/src/tickets/notion.ts`).
+  See "Setting up Notion" below.
 - **Linear** — set `LINEAR_API_KEY` and pass `--linear` (optionally
-  `--linear-team <key>` to scope to one team). Unverified against a live
-  Linear account — logic follows the documented GraphQL schema; test with
-  `plan` first.
+  `--linear-team <key>` to scope to one team). See "Setting up Linear"
+  below. Unverified against a live Linear account — logic follows the
+  documented GraphQL schema; test with `plan` first.
 - **Jira** — set `JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` and pass
   `--jira-project <key>` (or `--jira-jql <jql>` for a fully custom query).
-  Unverified against a live Jira instance — test with `plan` first.
+  See "Setting up Jira" below. Unverified against a live Jira instance —
+  test with `plan` first.
+
+### Setting up GitHub
+
+No API key needed — delegAItor shells out to the `gh` CLI and reuses
+whatever account it's already authenticated as.
+
+1. Install the GitHub CLI if you don't have it: `brew install gh` (macOS)
+   or see [cli.github.com](https://cli.github.com/).
+2. Authenticate once: `gh auth login` and follow the prompts (browser or
+   token-based auth both work).
+3. Confirm it works: `gh issue list --repo owner/repo --limit 1`.
+4. Use it:
+   ```bash
+   # Explicit issue refs, current or another repo:
+   delegaitor plan --repo owner/repo <<'EOF'
+   #1234
+   other-org/other-repo#42
+   EOF
+
+   # Every open issue assigned to you in owner/repo:
+   delegaitor plan --repo owner/repo --github-mine
+   ```
+
+If `gh` isn't authenticated, `delegaitor` will surface `gh`'s own auth
+error — run `gh auth status` to check.
+
+### Setting up Notion
+
+1. **Create an integration** (this is what generates your API key):
+   - Go to [notion.so/my-integrations](https://www.notion.so/my-integrations)
+     (log in to your Notion workspace first).
+   - Click **New integration**.
+   - Give it a name (e.g. "delegAItor"), select the workspace it belongs
+     to, and under **Capabilities** make sure **Read content** is checked
+     (you don't need write/insert capabilities for delegAItor).
+   - Click **Submit**. On the next screen, copy the **Internal Integration
+     Secret** — this string (starts with `secret_` or `ntn_`) is your
+     `NOTION_API_KEY`. Keep it private; treat it like a password.
+2. **Share your ticket database with the integration** (the single most
+   common setup mistake — without this step every query silently returns
+   zero results, not an error):
+   - Open the Notion database you use as your ticket board.
+   - Click the `•••` menu in the top-right corner of the page.
+   - Scroll to **Connections** (may be called "Add connections" on older
+     Notion versions) → search for and select the integration you just
+     created.
+   - Confirm it now appears listed under that page's connections.
+3. **Get the database id**: open the database as a full page and copy the
+   id out of the URL:
+   `https://www.notion.so/<workspace>/<DATABASE_ID>?v=<view_id>` — the
+   `DATABASE_ID` is a 32-character hex string (dashes optional, delegAItor
+   accepts either form).
+4. **Check your database's property names** against delegAItor's defaults,
+   since Notion schemas are entirely user-defined:
+   - Title property: defaults to `Name`.
+   - Status property: defaults to `Status` (a Select property).
+   - Assignee property: defaults to `Assignee` (a Person property).
+   - If your database uses different names, there's currently no CLI flag
+     for this — call `notionTicketSource()` directly from
+     `packages/core/src/tickets/notion.ts` with a `properties: {...}`
+     override (e.g. `{ title: "Task", assignee: "Owner" }`), or add CLI
+     flags yourself (`--notion-title-prop`, etc.) as a small PR.
+5. **Export the key and preview** (no worktrees/agents created yet):
+   ```bash
+   export NOTION_API_KEY=secret_xxx
+   delegaitor plan --notion-db <database-id> --repo owner/repo
+   ```
+6. **If it resolves 0 tickets but you expect some**, check in this order:
+   - The integration is actually connected to that database (step 2).
+   - Your property names match the defaults, or you've supplied overrides
+     (step 4).
+   - The assignee-resolution gotcha below — the most common cause when
+     using one integration token shared across a team.
+   - Run with `--all` temporarily to confirm the database/connection
+     itself works before debugging the assignee filter specifically:
+     `delegaitor plan --notion-db <database-id> --all --repo owner/repo`.
+
+**Assignee resolution and the shared-token gotcha:** Notion API keys
+belong to an *integration* (a bot user), not to you personally, and the
+Person property references real workspace members, not bots. delegAItor
+handles this automatically for a **personal integration** (one you created
+for your own use) by resolving the human owner behind the bot. If instead
+your whole team shares **one integration token**, there's no way for the
+API to tell which teammate is running it, so the default "assigned to me"
+filter would otherwise silently return nothing — pass your own Notion user
+id explicitly to fix it:
+```bash
+delegaitor dispatch --notion-db <database-id> --notion-assignee-id <your-notion-user-id> --repo owner/repo
+```
+Find your Notion user id by opening any page you're already assigned to
+and reading the `people` property's `id` via the API, or by asking a
+teammate with workspace-admin access to look it up for you.
+
+### Setting up Linear
+
+1. **Create a personal API key**:
+   - In Linear, click your workspace name (top-left) → **Settings**.
+   - Go to **Security & access** → **Personal API keys** (under "My
+     account" in some Linear versions).
+   - Click **Create key**, give it a label, and copy the generated key
+     immediately — Linear only shows it once.
+2. **Export it and preview**:
+   ```bash
+   export LINEAR_API_KEY=lin_api_xxx
+   delegaitor plan --linear --repo owner/repo
+   # optionally scope to one team:
+   delegaitor plan --linear --linear-team ENG --repo owner/repo
+   ```
+   Find a team's key (e.g. `ENG`) from any of its issue identifiers
+   (`ENG-123`) or in Linear's team settings page.
+3. Because a personal API key is tied to your own Linear account, the
+   default "assigned to me" filter (`assignee.isMe`) works automatically —
+   no extra id lookup needed, unlike Notion.
+4. This adapter has not been exercised against a live Linear account in
+   this codebase (no test account was available while building it) — the
+   query follows Linear's documented GraphQL schema, but **run `plan`
+   first** and inspect the output before `dispatch`. If it errors, the
+   error message includes Linear's raw GraphQL error text to help debug.
+
+### Setting up Jira
+
+1. **Create an API token**:
+   - Go to
+     [id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens).
+   - Click **Create API token**, give it a label, and copy it — this is
+     your `JIRA_API_TOKEN`. It won't be shown again.
+2. **Gather the other two values**:
+   - `JIRA_BASE_URL`: your Jira Cloud site, e.g.
+     `https://your-domain.atlassian.net` (no trailing slash).
+   - `JIRA_EMAIL`: the email address of your Atlassian account (the one
+     the API token belongs to).
+3. **Export them and preview**:
+   ```bash
+   export JIRA_BASE_URL=https://your-domain.atlassian.net
+   export JIRA_EMAIL=you@example.com
+   export JIRA_API_TOKEN=xxx
+   delegaitor plan --jira-project ENG --repo owner/repo
+   ```
+   Find your project key (e.g. `ENG`) from any of its issue keys
+   (`ENG-123`) or Jira's project settings page.
+4. `assignee = currentUser()` uses whichever account the API token/email
+   pair belongs to, so "assigned to me" works automatically without any
+   extra id lookup.
+5. **Safety guard**: passing `--all` without `--jira-project` throws
+   instead of silently querying your entire Jira instance — you must
+   either keep the default assignee scoping, or supply a project when
+   opting out of it. Use `--jira-jql` instead if you need a fully custom
+   query (it overrides the built-in default/mine query entirely, and
+   bypasses the project-required guard).
+6. This adapter has not been exercised against a live Jira instance in
+   this codebase — the query follows Jira Cloud's documented REST v3
+   schema, but **run `plan` first** and inspect the output before
+   `dispatch`.
 
 ### "Not all tickets are yours" — assignee scoping on shared boards
 
 Notion, Linear, and Jira boards are usually shared across a whole team, so
 by default all three are scoped to **assigned to you only**:
 
-- Notion: server-side `people.contains` filter on the assignee property
-  (auto-resolves your user id via `/v1/users/me`).
+- Notion: server-side `people.contains` filter on the assignee property.
 - Linear: `assignee: { isMe: { eq: true } }` GraphQL filter.
 - Jira: `assignee = currentUser()` JQL clause (and Jira additionally
   *requires* a `--jira-project` if you opt out of this, so `--all` can't
@@ -185,6 +389,11 @@ Pass `--all` to pull every open/ready ticket on the board instead. Either
 way, explicitly naming a ticket's title, id, or URL in the input text always
 resolves that specific ticket regardless of assignee — explicit mention is
 treated as explicit intent.
+
+Linear/Jira tokens are tied to your own account, so `isMe`/`currentUser()`
+just work automatically. Notion is different — see the assignee-resolution
+gotcha in "Setting up Notion" above (shared/workspace-owned integration
+tokens need `--notion-assignee-id`).
 
 ## Known limitations
 
