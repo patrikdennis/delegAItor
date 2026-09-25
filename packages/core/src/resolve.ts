@@ -39,6 +39,7 @@ export interface ResolveExecutionPlanOptions {
     | "databaseId"
     | "properties"
     | "readyStatuses"
+    | "projects"
     | "apiKey"
     | "apiBaseUrl"
     | "assigneeUserId"

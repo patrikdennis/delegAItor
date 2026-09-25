@@ -12,11 +12,28 @@ export interface NotionSourceOptions {
     status?: string; // a select property; only non-done items are pulled
     body?: string; // a rich_text property used as the ticket body/spec
     assignee?: string; // a "people" property; default "Assignee"
+    /**
+     * Property holding a human-readable project/initiative name, used to
+     * scope to one project on a shared multi-project board. Boards vary a
+     * lot here: a plain `select`/`status` property works directly, but a
+     * `relation` to a separate Projects database only exposes an opaque
+     * id — point this at a `rollup` property that surfaces the related
+     * project's title instead (Notion databases often have one for
+     * exactly this reason).
+     */
+    project?: string;
   };
   defaultRepoId: string;
   defaultRepoPath: string;
   /** Notion select value(s) considered "ready to delegate". Defaults to any non-done status. */
   readyStatuses?: string[];
+  /**
+   * Restrict to one or more project/initiative names (matched against
+   * `properties.project`, e.g. from a rollup showing a related project's
+   * title). Every workspace organizes projects differently, so there's no
+   * default — omit to pull tickets from every project in the database.
+   */
+  projects?: string[];
   /**
    * On a shared scrum board not everything is yours. When true (the
    * default whenever an assignee property is configured/discoverable) the
@@ -64,6 +81,7 @@ export function notionTicketSource(opts: NotionSourceOptions): TicketSource {
     status: opts.properties?.status ?? "Status",
     body: opts.properties?.body,
     assignee: opts.properties?.assignee ?? "Assignee",
+    project: opts.properties?.project,
   };
 
   return {
@@ -132,6 +150,16 @@ export function notionTicketSource(opts: NotionSourceOptions): TicketSource {
         if (!explicitSelection && opts.readyStatuses?.length) {
           const statusValue = plainText(p.properties[props.status]);
           if (!statusValue || !opts.readyStatuses.includes(statusValue)) continue;
+        }
+        if (!explicitSelection && opts.projects?.length) {
+          if (!props.project) {
+            throw new Error(
+              "notionTicketSource: `projects` filter requires `properties.project` to be set to the " +
+                "database's project-name property (e.g. a rollup showing the related project's title).",
+            );
+          }
+          const projectValue = plainText(p.properties[props.project]);
+          if (!projectValue || !opts.projects.includes(projectValue)) continue;
         }
         const repoId = props.repo
           ? (plainText(p.properties[props.repo]) ?? opts.defaultRepoId)
@@ -304,13 +332,22 @@ type NotionProperty = {
   select?: { name: string } | null;
   status?: { name: string } | null;
   url?: string;
+  multi_select?: { name: string }[];
+  rollup?: {
+    type: string;
+    array?: NotionProperty[];
+  };
 };
 
 /**
  * Reads a property's plain-text value. Notion has two distinct "labeled
  * dropdown" property types with the same underlying shape — the older
  * `select` and the newer `status` (which newly-created databases/boards
- * often use by default) — so both are handled the same way here.
+ * often use by default) — so both are handled the same way here. Also
+ * handles `multi_select` (comma-joined) and `rollup` (recurses into the
+ * rolled-up values, e.g. a rollup surfacing a related project's title —
+ * the common way to get a readable name out of a `relation` property,
+ * which by itself only exposes opaque ids).
  */
 function plainText(prop: NotionProperty | undefined): string | undefined {
   if (!prop) return undefined;
@@ -320,5 +357,9 @@ function plainText(prop: NotionProperty | undefined): string | undefined {
   if (prop.type === "url") return prop.url ?? undefined;
   if (prop.type === "select") return prop.select?.name;
   if (prop.type === "status") return prop.status?.name;
+  if (prop.type === "multi_select") return prop.multi_select?.map((s) => s.name).join(", ") || undefined;
+  if (prop.type === "rollup" && prop.rollup?.type === "array") {
+    return prop.rollup.array?.map((item) => plainText(item)).filter(Boolean).join(", ") || undefined;
+  }
   return undefined;
 }
