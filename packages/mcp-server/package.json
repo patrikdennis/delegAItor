@@ -1,0 +1,17 @@
+{
+  "name": "@delegaitor/mcp-server",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "delegaitor-mcp": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@delegaitor/core": "*",
+    "@modelcontextprotocol/sdk": "^1.10.0",
+    "zod": "^3.24.1"
+  }
+}

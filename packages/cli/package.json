@@ -1,0 +1,16 @@
+{
+  "name": "@delegaitor/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "delegaitor": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@delegaitor/core": "*",
+    "commander": "^13.1.0"
+  }
+}

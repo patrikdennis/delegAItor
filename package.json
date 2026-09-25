@@ -1,0 +1,24 @@
+{
+  "name": "delegaitor",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Delegates tickets to isolated git worktrees/branches and agent sessions (Claude, Copilot, etc.), keeping them in sync via a shared resource-lock and messaging registry.",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "tsc -b --pretty",
+    "cli": "node --enable-source-maps packages/cli/dist/index.js",
+    "dev:cli": "tsx packages/cli/src/index.ts",
+    "dev:mcp": "tsx packages/mcp-server/src/index.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
