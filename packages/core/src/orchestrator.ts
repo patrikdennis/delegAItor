@@ -13,9 +13,27 @@ import { releaseAllLocks } from "./sync/locks.js";
 export function persistPlan(plan: ExecutionPlan, rawPrompt: string): void {
   const db = getDb();
   const insertRun = db.prepare(`INSERT INTO runs (id, prompt) VALUES (?, ?)`);
+  // Ticket ids are deterministic (derived from the source's externalId), so
+  // the same ticket can legitimately be re-planned/re-dispatched across
+  // separate runs (e.g. after a prior session was cancelled/cleaned up).
+  // Upsert instead of a plain INSERT so that doesn't hit tickets.id's
+  // PRIMARY KEY constraint.
   const insertTicket = db.prepare(`
     INSERT INTO tickets (id, run_id, source, external_id, external_url, title, body, repo_id, repo_path, base_ref, depends_on)
     VALUES (@id, @runId, @source, @externalId, @externalUrl, @title, @body, @repoId, @repoPath, @baseRef, @dependsOn)
+    ON CONFLICT(id) DO UPDATE SET
+      run_id = excluded.run_id,
+      source = excluded.source,
+      external_id = excluded.external_id,
+      external_url = excluded.external_url,
+      title = excluded.title,
+      body = excluded.body,
+      repo_id = excluded.repo_id,
+      repo_path = excluded.repo_path,
+      base_ref = excluded.base_ref,
+      depends_on = excluded.depends_on,
+      status = 'pending',
+      updated_at = datetime('now')
   `);
   const tx = db.transaction((p: ExecutionPlan) => {
     insertRun.run(p.runId, rawPrompt);
