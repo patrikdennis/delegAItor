@@ -27,6 +27,16 @@ export interface NotionSourceOptions {
   onlyAssignedToMe?: boolean;
   /** Notion user id to filter by; defaults to the API key's own user (`/v1/users/me`). */
   assigneeUserId?: string;
+  /**
+   * By default, delegAItor also fetches each page's actual body content
+   * (the paragraphs/lists/etc. written below the title/properties — the
+   * same text you'd see scrolling down the page in Notion, not a database
+   * property) via the block-children API, and appends it to the ticket
+   * body alongside any configured `properties.body` property. Pass
+   * `false` to skip this and rely solely on `properties.body` (fewer API
+   * calls, useful for very large databases).
+   */
+  includePageContent?: boolean;
   /** Override for testing against a local mock server instead of api.notion.com. */
   apiBaseUrl?: string;
 }
@@ -124,12 +134,20 @@ export function notionTicketSource(opts: NotionSourceOptions): TicketSource {
         const repoId = props.repo
           ? (plainText(p.properties[props.repo]) ?? opts.defaultRepoId)
           : opts.defaultRepoId;
+
+        const propertyBody = props.body ? plainText(p.properties[props.body]) : undefined;
+        let pageContent: string | undefined;
+        if (opts.includePageContent ?? true) {
+          pageContent = await fetchPageContent(baseUrl, apiKey, p.id);
+        }
+        const body = [propertyBody, pageContent].filter(Boolean).join("\n\n") || undefined;
+
         tickets.push({
           source: "notion",
           externalId: p.id,
           externalUrl: p.url,
           title,
-          body: props.body ? plainText(p.properties[props.body]) : undefined,
+          body,
           repoId,
           repoPath: repoId === opts.defaultRepoId ? opts.defaultRepoPath : repoId,
         });
@@ -137,6 +155,89 @@ export function notionTicketSource(opts: NotionSourceOptions): TicketSource {
       return tickets;
     },
   };
+}
+
+const MAX_BLOCK_DEPTH = 3; // caps recursion into deeply nested toggles/lists
+const MAX_BLOCKS_PAGE_SIZE = 100;
+
+/**
+ * Fetches a Notion page's body content (the blocks rendered below the
+ * title/properties) and flattens it to plain text, recursing into
+ * children (nested lists, toggles, etc.) up to MAX_BLOCK_DEPTH. This is
+ * distinct from `properties.body` — that's one specific database
+ * property; this is literally what you see scrolling down the page.
+ */
+async function fetchPageContent(
+  baseUrl: string,
+  apiKey: string,
+  blockId: string,
+  depth = 0,
+): Promise<string | undefined> {
+  if (depth >= MAX_BLOCK_DEPTH) return undefined;
+  const lines: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const url = new URL(`${baseUrl}/v1/blocks/${blockId}/children`);
+    url.searchParams.set("page_size", String(MAX_BLOCKS_PAGE_SIZE));
+    if (cursor) url.searchParams.set("start_cursor", cursor);
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Notion-Version": NOTION_VERSION,
+      },
+    });
+    if (!res.ok) {
+      // Non-fatal: a page the integration can read via query but not via
+      // blocks (rare permission edge case) shouldn't kill the whole run.
+      return lines.length ? lines.join("\n") : undefined;
+    }
+    const data = (await res.json()) as {
+      results: NotionBlock[];
+      has_more: boolean;
+      next_cursor: string | null;
+    };
+    for (const block of data.results) {
+      const text = blockPlainText(block);
+      if (text) lines.push(text);
+      if (block.has_children) {
+        const nested = await fetchPageContent(baseUrl, apiKey, block.id, depth + 1);
+        if (nested) lines.push(nested);
+      }
+    }
+    if (!data.has_more || !data.next_cursor) break;
+    cursor = data.next_cursor;
+  } while (true);
+  return lines.length ? lines.join("\n") : undefined;
+}
+
+interface NotionBlock {
+  id: string;
+  type: string;
+  has_children: boolean;
+  [key: string]: unknown;
+}
+
+/** Flattens the handful of common Notion block types into a plain-text line. */
+function blockPlainText(block: NotionBlock): string | undefined {
+  const rich = (block as Record<string, { rich_text?: { plain_text: string }[] }>)[block.type];
+  const text = rich?.rich_text?.map((t) => t.plain_text).join("") ?? "";
+  if (!text) return undefined;
+  switch (block.type) {
+    case "heading_1":
+    case "heading_2":
+    case "heading_3":
+      return `${text}`;
+    case "bulleted_list_item":
+    case "to_do":
+      return `- ${text}`;
+    case "numbered_list_item":
+      return `- ${text}`;
+    case "quote":
+    case "callout":
+      return `> ${text}`;
+    default:
+      return text;
+  }
 }
 
 async function fetchCurrentUserId(baseUrl: string, apiKey: string): Promise<string> {

@@ -31,10 +31,18 @@ export interface ResolveExecutionPlanOptions {
   github?: {
     /** Also pull open GitHub issues assigned to you in `repo`, not just explicit "#123" refs. */
     mine?: boolean;
+    /** Also fetch each issue's comment thread as extra ticket context. Defaults to false. */
+    comments?: boolean;
   };
   notion?: Pick<
     NotionSourceOptions,
-    "databaseId" | "properties" | "readyStatuses" | "apiKey" | "apiBaseUrl" | "assigneeUserId"
+    | "databaseId"
+    | "properties"
+    | "readyStatuses"
+    | "apiKey"
+    | "apiBaseUrl"
+    | "assigneeUserId"
+    | "includePageContent"
   >;
   linear?: Pick<LinearSourceOptions, "apiKey" | "teamKey" | "apiUrl" | "stateNames">;
   jira?: Pick<JiraSourceOptions, "baseUrl" | "email" | "apiToken" | "project" | "jql" | "statuses">;
@@ -58,6 +66,7 @@ export async function resolveExecutionPlan(
     defaultRepo: repoId,
     defaultRepoPath: repoPath,
     includeAssignedToMe: opts.github?.mine ?? false,
+    includeComments: opts.github?.comments ?? false,
   };
   const sources = [
     githubTicketSource(githubOpts),
