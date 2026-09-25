@@ -142,6 +142,11 @@ export function notionTicketSource(opts: NotionSourceOptions): TicketSource {
 
       const tickets: NormalizedTicket[] = [];
       for (const p of pages) {
+        // Always exclude archived/trashed pages regardless of any other
+        // filter — nobody wants delegAItor picking up a soft-deleted or
+        // archived card, and the query API doesn't reliably exclude these
+        // once any filter clause is present.
+        if (p.archived || p.in_trash) continue;
         const title = plainText(p.properties[props.title]);
         if (!title) continue;
         if (explicitSelection && !wanted.some((w) => title.includes(w) || p.id === w)) {
@@ -323,6 +328,8 @@ interface NotionPage {
   id: string;
   url: string;
   properties: Record<string, NotionProperty>;
+  archived?: boolean;
+  in_trash?: boolean;
 }
 
 type NotionProperty = {
