@@ -1,7 +1,7 @@
 ---
 name: delegate
 description: 'Delegate tickets with delegAItor: pull them from a board (Notion/Linear/Jira/GitHub) or a pasted list, preview branches, and dispatch one agent per ticket in its own worktree and cmux tab. Use when the user says "delegate my tickets", "start my Not started tickets", "dispatch these", or pastes several tickets to work in parallel. Also sets up saved profiles so this is one step next time.'
-argument-hint: 'Optional: a profile name (e.g. "example-project"), a board/status to pull from, or a list of tickets.'
+argument-hint: 'Optional: a profile name (e.g. "my-board"), a board/status to pull from, or a list of tickets.'
 ---
 
 # Delegate tickets
