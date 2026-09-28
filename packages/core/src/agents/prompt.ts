@@ -19,6 +19,18 @@ export function buildTicketPrompt({ ticket, sessionId }: PromptContext): string 
       `to check for conflicts.`
     : "";
 
+  const naming = ticket.branchNaming;
+  const branchNote = !naming
+    ? ""
+    : naming.locked
+      ? `\nBranch naming: the user set the "${naming.prefix}" prefix explicitly. Keep it.`
+      : `\nBranch naming: the "${naming.prefix}" prefix was guessed before anyone read the ticket (${naming.reason}).
+Prefixes for this repo (from ${naming.origin}):
+${naming.options.map((o) => `  ${o.prefix.padEnd(12)} ${o.description}`).join("\n")}
+Once you understand the ticket, and before your first push, check the prefix fits.
+If another one fits better, switch it (this keeps the rest of the branch name):
+    delegaitor session rename-branch --session ${sessionId} --prefix <prefix>`;
+
   return `You are working a single delegated ticket in an isolated git worktree/branch.
 Do not touch files outside this repository's scope for this ticket, and do not
 merge, push, or force-push unless explicitly instructed to.
@@ -30,7 +42,7 @@ Branch: ${ticket.branch}
 Worktree: ${ticket.worktreePath}
 Session id: ${sessionId}
 Ticket id: ${ticket.id}
-${conflictNote}
+${conflictNote}${branchNote}
 
 ${ticket.body ? `--- Ticket details ---\n${ticket.body}\n---` : ""}
 
@@ -49,7 +61,11 @@ Coordination protocol (delegAItor CLI is on PATH):
     delegaitor message inbox --ticket ${ticket.id}
 - When you are done (or blocked), report status:
     delegaitor session complete --session ${sessionId} --status ready_for_review --summary "<summary>"
-    delegaitor session complete --session ${sessionId} --status blocked --summary "<why>"
+    delegaitor session complete --session ${sessionId} --status blocked --summary "<the exact question for the user>"
+  When blocked, stop and wait: the user's answer arrives as a new message in
+  this session.
+- Don't push or open a pull request unless the user asks. When they do, run:
+    delegaitor ticket ship ${sessionId} --title "<title>" --body "<why, what changed, how it was tested>"
 
 Work the ticket to completion: implement the change, run the relevant tests/
 linters for what you touched, and commit your work on this branch with a clear
