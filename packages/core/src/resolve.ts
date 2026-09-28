@@ -1,6 +1,7 @@
 import { execa } from "execa";
 import type { AgentRuntimeKind, ExecutionPlan, NormalizedTicket } from "./types.js";
 import { buildPlan } from "./planner.js";
+import { loadBranchPrefixRules, type BranchPrefixRules } from "./worktree/branch-prefix.js";
 import {
   githubTicketSource,
   markdownTicketSource,
@@ -20,6 +21,14 @@ export interface ResolveExecutionPlanOptions {
   repo?: string;
   repoPath?: string;
   base?: string;
+  /**
+   * Forces this prefix on every branch (e.g. "fix/", or "" for none). When
+   * omitted, each ticket gets a prefix picked from the repo's branch prefix
+   * rules (see loadBranchPrefixRules).
+   */
+  branchPrefix?: string;
+  /** Path to a branch-prefixes.json file, overriding the repo/home lookup. */
+  branchRulesFile?: string;
   /**
    * Shared "not all tickets are ours" switch for shared boards
    * (Notion/Linear/Jira): when false (the default), each of those sources
@@ -125,7 +134,17 @@ export async function resolveExecutionPlan(
     }
   }
 
-  const plan = buildPlan(resolved, { defaultAgent: opts.defaultAgent, agentOverrides: opts.agentOverrides });
+  const branchRules = new Map<string, BranchPrefixRules>();
+  for (const path of new Set(resolved.map((t) => t.repoPath))) {
+    branchRules.set(path, await loadBranchPrefixRules(path, opts.branchRulesFile));
+  }
+
+  const plan = buildPlan(resolved, {
+    defaultAgent: opts.defaultAgent,
+    agentOverrides: opts.agentOverrides,
+    branchPrefix: opts.branchPrefix,
+    branchRules,
+  });
   const statuses = Object.fromEntries(
     Object.entries(opts.boardStatuses ?? {}).filter(([, name]) => !!name?.trim()),
   ) as BoardStatusMap;

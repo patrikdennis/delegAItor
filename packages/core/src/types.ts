@@ -45,6 +45,18 @@ export interface PlannedTicket extends NormalizedTicket {
   conflictsWith: string[];
   /** Board-status sync config, set only when status names were configured. */
   boardSync?: BoardSync;
+  /** How the branch prefix was chosen, and which prefixes the agent may switch to. */
+  branchNaming?: BranchNaming;
+}
+
+export interface BranchNaming {
+  prefix: string;
+  reason: string;
+  /** Where the allowed prefixes came from (a rules file path, repo detection, or built-in). */
+  origin: string;
+  options: { prefix: string; description: string }[];
+  /** True when the user forced the prefix (--branch-prefix); the agent must not rename it. */
+  locked: boolean;
 }
 
 export interface ExecutionPlan {

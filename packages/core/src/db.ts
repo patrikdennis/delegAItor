@@ -93,6 +93,9 @@ function migrate(db: Database.Database): void {
   if (!ticketCols.has("board_sync_json")) {
     db.exec(`ALTER TABLE tickets ADD COLUMN board_sync_json TEXT`);
   }
+  if (!ticketCols.has("branch_naming_json")) {
+    db.exec(`ALTER TABLE tickets ADD COLUMN branch_naming_json TEXT`);
+  }
 }
 
 export function closeDb(): void {

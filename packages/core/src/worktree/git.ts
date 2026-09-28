@@ -3,9 +3,24 @@ import { join } from "node:path";
 import { sanitize, repoWorktreesDir } from "../paths.js";
 import type { PlannedTicket } from "../types.js";
 
-export function branchName(ticketId: string, title: string): string {
-  const slug = sanitize(title.toLowerCase()).slice(0, 40).replace(/-+$/g, "");
-  return `agent/${sanitize(ticketId)}-${slug}`;
+export const DEFAULT_BRANCH_PREFIX = "feature/";
+
+export function branchName(ticketId: string, title: string, prefix: string = DEFAULT_BRANCH_PREFIX): string {
+  const slug = sanitize(transliterate(title).toLowerCase()).slice(0, 40).replace(/-+$/g, "");
+  return `${prefix}${sanitize(ticketId)}-${slug}`;
+}
+
+// Letters that Unicode normalization doesn't decompose into base + accent.
+const NON_DECOMPOSING: Record<string, string> = {
+  ß: "ss", æ: "ae", Æ: "AE", ø: "o", Ø: "O", đ: "d", Đ: "D", ł: "l", Ł: "L", þ: "th", Þ: "TH",
+};
+
+/** Maps accented letters to plain ASCII (följer → foljer, så → sa) so titles stay readable in branch names. */
+export function transliterate(input: string): string {
+  return input
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[ßæÆøØđĐłŁþÞ]/g, (ch) => NON_DECOMPOSING[ch] ?? ch);
 }
 
 export interface CreateWorktreeOptions {
