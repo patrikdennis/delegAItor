@@ -17,6 +17,16 @@ import {
   markRead,
   notifyCmux,
   getDb,
+  syncBoardStatus,
+  isBoardLifecycle,
+  BOARD_LIFECYCLE,
+  CREDENTIAL_NAMES,
+  isCredentialName,
+  setCredential,
+  removeCredential,
+  listCredentials,
+  credentialsPath,
+  type BoardStatusResult,
   type AgentRuntimeKind,
   type ExecutionPlan,
   type CleanupReport,
@@ -43,6 +53,7 @@ program
   .option("--notion-project-prop <name>", "Notion property exposing a human-readable project/initiative name (e.g. a rollup surfacing a related Project relation's title), used with --notion-project")
   .option("--notion-project <names>", "comma-separated project/initiative names to delegate (requires --notion-project-prop); every board organizes projects differently, so there's no default")
   .option("--notion-title-prop <name>", "Notion title property name, if not \"Name\" (e.g. \"Task\")")
+  .option("--notion-status-prop <name>", "Notion status/select property name, if not \"Status\"; used both for --notion-status filtering and --move-on-* updates")
   .option("--notion-body-prop <name>", "Notion rich-text property to use as ticket body/spec (in addition to page content), e.g. \"Spec\"")
   .option("--notion-no-page-content", "skip fetching each Notion page's body content (paragraphs/lists below the properties); only use --notion-body-prop if set", false)
   .option("--linear", "also pull tickets from Linear (uses LINEAR_API_KEY)", false)
@@ -51,6 +62,10 @@ program
   .option("--jira-project <key>", "pull tickets from this Jira project (uses JIRA_BASE_URL/JIRA_EMAIL/JIRA_API_TOKEN)")
   .option("--jira-jql <jql>", "custom JQL, overrides the default mine/project query")
   .option("--jira-status <statuses>", "comma-separated status names to delegate, exactly as they appear on your board; default is statusCategory != Done")
+  .option("--move-on-dispatch <status>", "board status to move each ticket to when its agent session starts, exactly as named on your board (e.g. \"In progress\")")
+  .option("--move-on-review <status>", "board status to move a ticket to when its session completes as ready_for_review (e.g. \"Ready for review\")")
+  .option("--move-on-blocked <status>", "board status to move a ticket to when its session reports blocked")
+  .option("--move-on-done <status>", "board status to move a ticket to when its session completes as done")
   .action(async (text, opts) => {
     const rawInput = await readInput(text, opts.file, opts);
     const plan = await resolvePlan(rawInput, opts);
@@ -75,6 +90,7 @@ program
   .option("--notion-project-prop <name>", "Notion property exposing a human-readable project/initiative name (e.g. a rollup surfacing a related Project relation's title), used with --notion-project")
   .option("--notion-project <names>", "comma-separated project/initiative names to delegate (requires --notion-project-prop); every board organizes projects differently, so there's no default")
   .option("--notion-title-prop <name>", "Notion title property name, if not \"Name\" (e.g. \"Task\")")
+  .option("--notion-status-prop <name>", "Notion status/select property name, if not \"Status\"; used both for --notion-status filtering and --move-on-* updates")
   .option("--notion-body-prop <name>", "Notion rich-text property to use as ticket body/spec (in addition to page content), e.g. \"Spec\"")
   .option("--notion-no-page-content", "skip fetching each Notion page's body content (paragraphs/lists below the properties); only use --notion-body-prop if set", false)
   .option("--linear", "also pull tickets from Linear (uses LINEAR_API_KEY)", false)
@@ -83,6 +99,10 @@ program
   .option("--jira-project <key>", "pull tickets from this Jira project (uses JIRA_BASE_URL/JIRA_EMAIL/JIRA_API_TOKEN)")
   .option("--jira-jql <jql>", "custom JQL, overrides the default mine/project query")
   .option("--jira-status <statuses>", "comma-separated status names to delegate, exactly as they appear on your board; default is statusCategory != Done")
+  .option("--move-on-dispatch <status>", "board status to move each ticket to when its agent session starts, exactly as named on your board (e.g. \"In progress\")")
+  .option("--move-on-review <status>", "board status to move a ticket to when its session completes as ready_for_review (e.g. \"Ready for review\")")
+  .option("--move-on-blocked <status>", "board status to move a ticket to when its session reports blocked")
+  .option("--move-on-done <status>", "board status to move a ticket to when its session completes as done")
   .option("-y, --yes", "skip confirmation prompt")
   .action(async (text, opts) => {
     const rawInput = await readInput(text, opts.file, opts);
@@ -107,6 +127,7 @@ program
           `${result.launch.method}${result.launch.cmuxWorkspaceId ? ` [${result.launch.cmuxWorkspaceId}]` : ""} ` +
             `session=${result.sessionId}`,
         );
+        printBoardStatus(result.boardStatus);
       } catch (err) {
         console.log(`FAILED: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -205,6 +226,65 @@ message
     if (!msgs.length) console.log("No unread messages.");
   });
 
+const ticket = program.command("ticket").description("Manage delegated tickets");
+ticket
+  .command("move")
+  .description("Move a delegated ticket on its board to the status configured for a lifecycle stage (e.g. to retry a failed update)")
+  .requiredOption("--ticket <id>")
+  .requiredOption("--stage <stage>", BOARD_LIFECYCLE.join("|"))
+  .action(async (opts) => {
+    if (!isBoardLifecycle(opts.stage)) {
+      console.error(`Unknown stage "${opts.stage}". Expected one of: ${BOARD_LIFECYCLE.join(", ")}`);
+      process.exit(1);
+    }
+    const result = await syncBoardStatus(opts.ticket, opts.stage);
+    if (!result) {
+      console.log(`Nothing to do: no board status configured for "${opts.stage}" on ticket ${opts.ticket} (pass --move-on-* at dispatch).`);
+      return;
+    }
+    printBoardStatus(result);
+    if (!result.ok) process.exitCode = 1;
+  });
+
+const auth = program
+  .command("auth")
+  .description(`Store ticket-source credentials in ${"$DELEGAITOR_HOME"}/credentials.json so agent sessions can use them too`);
+auth
+  .command("set")
+  .argument("<name>", CREDENTIAL_NAMES.join("|"))
+  .description("Store a credential (value read from stdin or a hidden prompt, never from argv)")
+  .action(async (name: string) => {
+    if (!isCredentialName(name)) {
+      console.error(`Unknown credential "${name}". Expected one of: ${CREDENTIAL_NAMES.join(", ")}`);
+      process.exit(1);
+    }
+    const value = (process.stdin.isTTY ? await promptHidden(`${name}: `) : await readStdinIfPiped())?.trim();
+    if (!value) {
+      console.error("No value provided.");
+      process.exit(1);
+    }
+    setCredential(name, value);
+    console.log(`OK: stored ${name} in ${credentialsPath()} (mode 600)`);
+  });
+auth
+  .command("remove")
+  .argument("<name>", CREDENTIAL_NAMES.join("|"))
+  .action((name: string) => {
+    if (!isCredentialName(name)) {
+      console.error(`Unknown credential "${name}".`);
+      process.exit(1);
+    }
+    console.log(removeCredential(name) ? `OK: removed ${name}` : `${name} was not stored.`);
+  });
+auth
+  .command("list")
+  .description("Show which credentials are available and where from (values are never printed)")
+  .action(() => {
+    for (const c of listCredentials()) {
+      console.log(`${c.name.padEnd(16)} ${c.source ?? "-"}`);
+    }
+  });
+
 const session = program.command("session").description("Manage agent sessions");
 session
   .command("complete")
@@ -212,7 +292,8 @@ session
   .requiredOption("--status <status>", "e.g. ready_for_review, blocked, done")
   .option("--summary <text>")
   .action(async (opts) => {
-    completeSession(opts.session, opts.status, opts.summary);
+    const result = await completeSession(opts.session, opts.status, opts.summary);
+    printBoardStatus(result.boardStatus);
     await notifyCmux("delegAItor", `Session ${opts.session}: ${opts.status}${opts.summary ? ` — ${opts.summary}` : ""}`);
     console.log("OK");
   });
@@ -317,6 +398,7 @@ async function resolvePlan(
     notionAssigneeId?: string;
     notionStatus?: string;
     notionTitleProp?: string;
+    notionStatusProp?: string;
     notionBodyProp?: string;
     notionProjectProp?: string;
     notionProject?: string;
@@ -327,6 +409,10 @@ async function resolvePlan(
     jiraProject?: string;
     jiraJql?: string;
     jiraStatus?: string;
+    moveOnDispatch?: string;
+    moveOnReview?: string;
+    moveOnBlocked?: string;
+    moveOnDone?: string;
   },
 ): Promise<ExecutionPlan> {
   return resolveExecutionPlan(input, {
@@ -343,8 +429,13 @@ async function resolvePlan(
           readyStatuses: parseStatusList(opts.notionStatus),
           projects: parseStatusList(opts.notionProject),
           properties:
-            opts.notionTitleProp || opts.notionBodyProp || opts.notionProjectProp
-              ? { title: opts.notionTitleProp, body: opts.notionBodyProp, project: opts.notionProjectProp }
+            opts.notionTitleProp || opts.notionStatusProp || opts.notionBodyProp || opts.notionProjectProp
+              ? {
+                  title: opts.notionTitleProp,
+                  status: opts.notionStatusProp,
+                  body: opts.notionBodyProp,
+                  project: opts.notionProjectProp,
+                }
               : undefined,
           includePageContent: !opts.notionNoPageContent,
         }
@@ -356,7 +447,22 @@ async function resolvePlan(
       opts.jiraProject || opts.jiraJql
         ? { project: opts.jiraProject, jql: opts.jiraJql, statuses: parseStatusList(opts.jiraStatus) }
         : undefined,
+    boardStatuses: {
+      in_progress: opts.moveOnDispatch,
+      ready_for_review: opts.moveOnReview,
+      blocked: opts.moveOnBlocked,
+      done: opts.moveOnDone,
+    },
   });
+}
+
+function printBoardStatus(result: BoardStatusResult | undefined): void {
+  if (!result) return;
+  console.log(
+    result.ok
+      ? `  board: moved to "${result.status}"`
+      : `  board: could not move to "${result.status}": ${result.error}`,
+  );
 }
 
 /**
@@ -426,6 +532,32 @@ async function confirm(question: string): Promise<boolean> {
       process.stdin.pause();
       resolve(data.toString().trim().toLowerCase().startsWith("y"));
     });
+  });
+}
+
+async function promptHidden(question: string): Promise<string> {
+  process.stdout.write(question);
+  const stdin = process.stdin;
+  stdin.setRawMode(true);
+  stdin.resume();
+  let value = "";
+  return new Promise((resolve) => {
+    const onData = (buf: Buffer) => {
+      for (const ch of buf.toString("utf8")) {
+        if (ch === "\r" || ch === "\n") {
+          stdin.setRawMode(false);
+          stdin.pause();
+          stdin.off("data", onData);
+          process.stdout.write("\n");
+          resolve(value);
+          return;
+        }
+        if (ch === "\u0003") process.exit(130);
+        if (ch === "\u007f") value = value.slice(0, -1);
+        else value += ch;
+      }
+    };
+    stdin.on("data", onData);
   });
 }
 

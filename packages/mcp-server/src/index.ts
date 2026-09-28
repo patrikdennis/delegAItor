@@ -17,6 +17,8 @@ import {
   unreadMessagesFor,
   markRead,
   getDb,
+  syncBoardStatus,
+  BOARD_LIFECYCLE,
   type ExecutionPlan,
   type AgentRuntimeKind,
 } from "@delegaitor/core";
@@ -66,6 +68,10 @@ const ticketSourceInputSchema = {
     .string()
     .optional()
     .describe('Notion title property name, if not "Name" (e.g. "Task").'),
+  notionStatusProp: z
+    .string()
+    .optional()
+    .describe('Notion status/select property name, if not "Status". Used for notionStatuses filtering and board moves.'),
   notionBodyProp: z
     .string()
     .optional()
@@ -117,6 +123,19 @@ const ticketSourceInputSchema = {
       "Status names to delegate, exactly as they appear on your board (e.g. [\"Selected for Development\"]). " +
         "Omit to use the default statusCategory != Done. Ignored if jiraJql is supplied.",
     ),
+  boardStatuses: z
+    .object({
+      in_progress: z.string().optional().describe("Status to move each ticket to when its agent session starts"),
+      ready_for_review: z.string().optional().describe("Status to move to when the session completes as ready_for_review"),
+      blocked: z.string().optional().describe("Status to move to when the session reports blocked"),
+      done: z.string().optional().describe("Status to move to when the session completes as done"),
+    })
+    .optional()
+    .describe(
+      "Board status names to move Notion/Linear/Jira tickets to as their sessions progress, exactly as named on " +
+        'the board (e.g. { in_progress: "In progress", ready_for_review: "Ready for review" }). Columns are named ' +
+        "differently on every board, so nothing is moved unless a name is given for that stage.",
+    ),
 };
 
 async function resolvePlan(args: {
@@ -132,6 +151,7 @@ async function resolvePlan(args: {
   notionAssigneeId?: string;
   notionStatuses?: string[];
   notionTitleProp?: string;
+  notionStatusProp?: string;
   notionBodyProp?: string;
   notionProjectProp?: string;
   notionProjects?: string[];
@@ -142,6 +162,7 @@ async function resolvePlan(args: {
   jiraProject?: string;
   jiraJql?: string;
   jiraStatuses?: string[];
+  boardStatuses?: { in_progress?: string; ready_for_review?: string; blocked?: string; done?: string };
 }): Promise<ExecutionPlan> {
   return resolveExecutionPlan(args.text, {
     defaultAgent: args.agent,
@@ -157,8 +178,13 @@ async function resolvePlan(args: {
           readyStatuses: args.notionStatuses,
           projects: args.notionProjects,
           properties:
-            args.notionTitleProp || args.notionBodyProp || args.notionProjectProp
-              ? { title: args.notionTitleProp, body: args.notionBodyProp, project: args.notionProjectProp }
+            args.notionTitleProp || args.notionStatusProp || args.notionBodyProp || args.notionProjectProp
+              ? {
+                  title: args.notionTitleProp,
+                  status: args.notionStatusProp,
+                  body: args.notionBodyProp,
+                  project: args.notionProjectProp,
+                }
               : undefined,
           includePageContent: args.notionIncludePageContent,
         }
@@ -168,6 +194,7 @@ async function resolvePlan(args: {
       args.jiraProject || args.jiraJql
         ? { project: args.jiraProject, jql: args.jiraJql, statuses: args.jiraStatuses }
         : undefined,
+    boardStatuses: args.boardStatuses,
   });
 }
 
@@ -223,6 +250,7 @@ server.registerTool(
           worktreePath: result.worktreePath,
           launchMethod: result.launch.method,
           cmuxWorkspaceId: result.launch.cmuxWorkspaceId,
+          boardStatus: result.boardStatus,
         });
       } catch (err) {
         results.push({ ticketId: ticket.id, error: err instanceof Error ? err.message : String(err) });
@@ -334,12 +362,31 @@ server.registerTool(
     title: "Report a session as finished or blocked",
     description:
       "Marks a session's outcome (e.g. status 'ready_for_review', 'blocked', 'done') and releases any locks " +
-      "it still holds so other sessions can proceed.",
+      "it still holds so other sessions can proceed. If board statuses were configured at dispatch, this also " +
+      "moves the source ticket (Notion/Linear/Jira) to the matching column; the result is returned as boardStatus.",
     inputSchema: { sessionId: z.string(), status: z.string(), summary: z.string().optional() },
   },
   async ({ sessionId, status, summary }) => {
-    completeSession(sessionId, status, summary);
-    return textResult(`Session ${sessionId} marked ${status}`);
+    const result = await completeSession(sessionId, status, summary);
+    return jsonResult({ sessionId, status, boardStatus: result.boardStatus ?? null });
+  },
+);
+
+server.registerTool(
+  "delegaitor_ticket_move",
+  {
+    title: "Move a delegated ticket on its board",
+    description:
+      "Moves a delegated ticket's source item (Notion/Linear/Jira) to the board status configured for a lifecycle " +
+      "stage at dispatch time. Normally happens automatically on dispatch and delegaitor_session_complete; use " +
+      "this to retry after a failed move.",
+    inputSchema: { ticketId: z.string(), stage: z.enum(BOARD_LIFECYCLE) },
+  },
+  async ({ ticketId, stage }) => {
+    const result = await syncBoardStatus(ticketId, stage);
+    return result
+      ? jsonResult(result)
+      : textResult(`No board status configured for "${stage}" on ticket ${ticketId}.`);
   },
 );
 
