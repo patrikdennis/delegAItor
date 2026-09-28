@@ -125,6 +125,8 @@ async function main() {
   console.log(`  owner:     ${token.owner?.user?.name ?? token.owner?.user?.id ?? "(unknown)"}\n`);
   console.log("Export this and use it exactly like any other NOTION_API_KEY:\n");
   console.log(`  export NOTION_API_KEY=${token.access_token}\n`);
+  console.log("Or store it so dispatched agent sessions can use it too (needed for --move-on-* board moves):\n");
+  console.log(`  echo '${token.access_token}' | delegaitor auth set NOTION_API_KEY\n`);
 }
 
 main().catch((err) => {
