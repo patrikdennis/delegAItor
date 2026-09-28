@@ -55,3 +55,12 @@ branch with a clear commit message. Then report your outcome with
 
 Do not consider the ticket finished until `delegaitor_session_complete` has
 been called.
+
+If the ticket came from a board (Notion, Linear, Jira) and board statuses
+were configured at dispatch, `delegaitor_session_complete` also moves the
+source ticket to the matching column and returns the outcome as
+`boardStatus`. Include that outcome in your final message. If
+`boardStatus.ok` is false, report the error verbatim (it lists the valid
+column names) and do not claim the board was updated; the user can retry
+with `delegaitor_ticket_move` once the cause is fixed. `boardStatus: null`
+means no board move was configured for that status.

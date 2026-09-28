@@ -352,8 +352,8 @@ This token is scoped to you personally (like a PAT), so the default
    - Title property: defaults to `Name` — override with `--notion-title-prop`
      if yours is named differently (e.g. `Task`).
    - Status property: defaults to `Status` — works with either Notion's
-     older `select` type or its newer `status` type automatically, no
-     config needed either way.
+     older `select` type or its newer `status` type automatically. If your
+     status column has a different name, pass `--notion-status-prop`.
    - Assignee property: defaults to `Assignee` (a Person property).
    - If your database uses a different name for the assignee property,
      there's currently no CLI flag for it — call `notionTicketSource()`
@@ -379,6 +379,10 @@ This token is scoped to you personally (like a PAT), so the default
    export NOTION_API_KEY=<your token from option A, B, or C>
    delegaitor plan --notion-db <database-id> --notion-title-prop "Task" --repo owner/repo
    ```
+   If you want dispatched sessions to move tickets on the board (see
+   "Moving tickets across the board" below), also store the token with
+   `delegaitor auth set NOTION_API_KEY`, because agent sessions don't see
+   variables exported in your terminal.
 5. **Restrict to specific board columns/stages** with `--notion-status`
    (recommended — otherwise every status, including Done, is pulled): pass
    a comma-separated list matching your Status column's values exactly,
@@ -539,6 +543,67 @@ just work automatically. Notion is different — see the assignee-resolution
 gotcha in "Setting up Notion" above (shared/workspace-owned integration
 tokens need `--notion-assignee-id`).
 
+## Moving tickets across the board
+
+delegAItor can move each source ticket to a new column as its session
+progresses. Columns are named differently on every board and tool, so
+nothing moves unless you give the exact column name for a stage:
+
+| Flag | When it moves the ticket |
+|------|--------------------------|
+| `--move-on-dispatch <status>` | right after the ticket's agent session starts |
+| `--move-on-review <status>` | when the session completes as `ready_for_review` |
+| `--move-on-blocked <status>` | when the session reports `blocked` |
+| `--move-on-done <status>` | when the session completes as `done` |
+
+Pass them to `dispatch`. They're saved with each ticket, so the move on
+completion happens even though it runs later, inside the agent's own
+session (via `delegaitor_session_complete` or `delegaitor session complete`):
+
+```bash
+delegaitor dispatch --notion-db <database-id> --notion-title-prop "Task" \
+  --notion-status "Not started" \
+  --move-on-dispatch "In progress" --move-on-review "Ready for review" \
+  --repo owner/repo --agent copilot
+```
+
+**Credentials for agent sessions.** Dispatched sessions run in new cmux
+shells that don't inherit variables you `export`ed, so the move on
+completion can't see `NOTION_API_KEY` etc. from your terminal. Store them
+once instead:
+
+```bash
+delegaitor auth set NOTION_API_KEY     # prompts without echoing; or pipe the value in
+delegaitor auth list                   # shows which are set and where from, never the values
+```
+
+Values go to `$DELEGAITOR_HOME/credentials.json` (mode 600). Environment
+variables still take precedence when set. The same works for
+`LINEAR_API_KEY`, `JIRA_BASE_URL`, `JIRA_EMAIL` and `JIRA_API_TOKEN`.
+
+**How each tool is updated:**
+
+- **Notion**: sets the status/select property (`--notion-status-prop`,
+  default `Status`). The name is checked against the column's existing
+  options first, so a typo returns an error listing the valid names
+  instead of silently creating a new column.
+- **Linear**: sets the issue's workflow state, looked up by name on the
+  issue's own team.
+- **Jira**: runs the workflow transition leading to that status. Jira only
+  allows transitions that are valid from the current status, so if your
+  workflow can't jump straight there, the error lists the reachable
+  statuses.
+- **GitHub issues and markdown tickets** have no board columns, so they
+  aren't moved.
+
+Names match case-insensitively. A failed move never fails the dispatch or
+the session completion: the result is printed by the CLI and returned as
+`boardStatus` by the MCP tools. To retry, run
+`delegaitor ticket move --ticket <id> --stage ready_for_review` (or the
+`delegaitor_ticket_move` MCP tool). Tickets dispatched without `--move-on-*`
+flags have nothing saved, so dispatch them again with the flags to enable
+moves.
+
 ## Known limitations
 
 - Conflict detection is a static heuristic (shared path-like substrings in
@@ -552,3 +617,4 @@ tokens need `--notion-assignee-id`).
   shape, filter construction, assignee/`--all`/explicit-selection
   behavior) but have not been exercised against real Linear/Jira accounts.
   Run `delegaitor plan` first to sanity-check output before `dispatch`.
+  The same applies to their board moves (`--move-on-*`).
