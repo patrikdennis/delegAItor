@@ -7,6 +7,13 @@ import {
   dispatchTicket,
   listSessions,
   completeSession,
+  renameSessionBranch,
+  closeTicket,
+  shipTicket,
+  ticketOverview,
+  ticketContext,
+  readSessionScreen,
+  nudgeSession,
   cleanupSession,
   listCleanupCandidates,
   resolveExecutionPlan,
@@ -19,8 +26,15 @@ import {
   getDb,
   syncBoardStatus,
   BOARD_LIFECYCLE,
+  getProfile,
+  mergeProfile,
+  cleanProfile,
+  profileToResolveOptions,
+  saveProfile,
+  listProfiles,
+  removeProfile,
+  type DispatchProfile,
   type ExecutionPlan,
-  type AgentRuntimeKind,
 } from "@delegaitor/core";
 
 const server = new McpServer({ name: "delegaitor", version: "0.1.0" });
@@ -31,22 +45,42 @@ const CleanupModeBranch = z.enum(["never", "if-merged", "force"]);
 
 /** Shared ticket-source input fields for delegaitor_plan and delegaitor_dispatch. */
 const ticketSourceInputSchema = {
-  text: z.string().describe("Ticket references or a markdown-style ticket list"),
-  agent: AgentEnum.default("claude").describe("Default agent runtime to assign to each ticket"),
+  profile: z
+    .string()
+    .optional()
+    .describe(
+      "Name of a saved profile (see delegaitor_profile_list) holding the board, filters, repo and board " +
+        "statuses. Any other field you pass overrides the profile's value.",
+    ),
+  text: z
+    .string()
+    .optional()
+    .describe("Ticket references or a markdown-style ticket list. Optional when a board source (e.g. a profile) is given."),
+  agent: AgentEnum.optional().describe("Default agent runtime to assign to each ticket (default: claude)"),
   repo: z.string().optional().describe('Default repo as "owner/repo"'),
   repoPath: z.string().optional().describe("Local filesystem path of --repo; defaults to cwd"),
   base: z.string().optional().describe("Default base branch, defaults to main"),
+  branchPrefix: z
+    .string()
+    .optional()
+    .describe(
+      'Forces this prefix on every branch, e.g. "fix/" ("" for none). Omit to pick a prefix per ticket from the repo\'s branch prefix rules.',
+    ),
+  branchRules: z
+    .string()
+    .optional()
+    .describe("Path to a branch-prefixes.json file describing the team's branch prefixes"),
   all: z
     .boolean()
-    .default(false)
+    .optional()
     .describe(
       "Pull every ticket on shared boards (Notion/Linear/Jira), not just those assigned to you. " +
         "Explicit ticket titles/ids/URLs in `text` always override this filter.",
     ),
-  githubMine: z.boolean().default(false).describe("Also pull open GitHub issues assigned to you in `repo`"),
+  githubMine: z.boolean().optional().describe("Also pull open GitHub issues assigned to you in `repo`"),
   githubComments: z
     .boolean()
-    .default(false)
+    .optional()
     .describe("Also fetch each GitHub issue's comment thread and include it as ticket context"),
   notionDatabaseId: z.string().optional().describe("Notion database id to also pull tickets from"),
   notionAssigneeId: z
@@ -96,13 +130,13 @@ const ticketSourceInputSchema = {
     ),
   notionIncludePageContent: z
     .boolean()
-    .default(true)
+    .optional()
     .describe(
       "Fetch each Notion page's actual body content (the paragraphs/lists written below the " +
         "properties — the same text visible scrolling down the page) and include it as ticket context. " +
         "Set to false to skip this and rely solely on notionBodyProp.",
     ),
-  linear: z.boolean().default(false).describe("Also pull tickets from Linear (uses LINEAR_API_KEY)"),
+  linear: z.boolean().optional().describe("Also pull tickets from Linear (uses LINEAR_API_KEY)"),
   linearTeamKey: z.string().optional().describe("Restrict Linear to one team key, e.g. ENG"),
   linearStatuses: z
     .array(z.string())
@@ -138,64 +172,14 @@ const ticketSourceInputSchema = {
     ),
 };
 
-async function resolvePlan(args: {
-  text: string;
-  agent: AgentRuntimeKind;
-  repo?: string;
-  repoPath?: string;
-  base?: string;
-  all?: boolean;
-  githubMine?: boolean;
-  githubComments?: boolean;
-  notionDatabaseId?: string;
-  notionAssigneeId?: string;
-  notionStatuses?: string[];
-  notionTitleProp?: string;
-  notionStatusProp?: string;
-  notionBodyProp?: string;
-  notionProjectProp?: string;
-  notionProjects?: string[];
-  notionIncludePageContent?: boolean;
-  linear?: boolean;
-  linearTeamKey?: string;
-  linearStatuses?: string[];
-  jiraProject?: string;
-  jiraJql?: string;
-  jiraStatuses?: string[];
-  boardStatuses?: { in_progress?: string; ready_for_review?: string; blocked?: string; done?: string };
-}): Promise<ExecutionPlan> {
-  return resolveExecutionPlan(args.text, {
-    defaultAgent: args.agent,
-    repo: args.repo,
-    repoPath: args.repoPath,
-    base: args.base,
-    all: args.all,
-    github: { mine: args.githubMine, comments: args.githubComments },
-    notion: args.notionDatabaseId
-      ? {
-          databaseId: args.notionDatabaseId,
-          assigneeUserId: args.notionAssigneeId,
-          readyStatuses: args.notionStatuses,
-          projects: args.notionProjects,
-          properties:
-            args.notionTitleProp || args.notionStatusProp || args.notionBodyProp || args.notionProjectProp
-              ? {
-                  title: args.notionTitleProp,
-                  status: args.notionStatusProp,
-                  body: args.notionBodyProp,
-                  project: args.notionProjectProp,
-                }
-              : undefined,
-          includePageContent: args.notionIncludePageContent,
-        }
-      : undefined,
-    linear: args.linear ? { teamKey: args.linearTeamKey, stateNames: args.linearStatuses } : undefined,
-    jira:
-      args.jiraProject || args.jiraJql
-        ? { project: args.jiraProject, jql: args.jiraJql, statuses: args.jiraStatuses }
-        : undefined,
-    boardStatuses: args.boardStatuses,
-  });
+type PlanArgs = DispatchProfile & { profile?: string; text?: string };
+
+function planArgsToProfile({ profile, text: _text, ...args }: PlanArgs): DispatchProfile {
+  return profile ? mergeProfile(getProfile(profile), args) : cleanProfile(args);
+}
+
+async function resolvePlan(args: PlanArgs): Promise<ExecutionPlan> {
+  return resolveExecutionPlan(args.text ?? "", profileToResolveOptions(planArgsToProfile(args)));
 }
 
 function textResult(text: string) {
@@ -236,7 +220,7 @@ server.registerTool(
   async (args) => {
     const plan = await resolvePlan(args);
     if (!plan.tickets.length) return textResult("No tickets resolved from input.");
-    persistPlan(plan, args.text);
+    persistPlan(plan, args.text ?? "");
 
     const results = [];
     for (const ticket of plan.tickets) {
@@ -258,6 +242,48 @@ server.registerTool(
     }
     return jsonResult({ runId: plan.runId, tickets: results });
   },
+);
+
+server.registerTool(
+  "delegaitor_profile_list",
+  {
+    title: "List saved dispatch profiles",
+    description:
+      "Lists saved profiles: named sets of plan/dispatch options (board, filters, repo, agent, board statuses). " +
+        "Pass a profile's name as `profile` to delegaitor_plan/delegaitor_dispatch instead of every option.",
+    inputSchema: {},
+  },
+  async () => jsonResult(listProfiles()),
+);
+
+const { text: _t, profile: _p, ...profileFields } = ticketSourceInputSchema;
+
+server.registerTool(
+  "delegaitor_profile_save",
+  {
+    title: "Save a dispatch profile",
+    description:
+      "Saves plan/dispatch options under a name for later use with `profile`. With merge: true only the given " +
+        "fields change; otherwise the profile is replaced. repoPath should be an absolute path to the local clone. " +
+        "Check the options with delegaitor_plan first so the saved profile is known to resolve the right tickets.",
+    inputSchema: {
+      name: z.string().describe('Profile name, e.g. "sales-engine"'),
+      description: z.string().optional().describe("What the profile is for"),
+      merge: z.boolean().optional(),
+      ...profileFields,
+    },
+  },
+  async ({ name, merge, ...fields }) => jsonResult({ name, profile: saveProfile(name, fields as DispatchProfile, { merge }) }),
+);
+
+server.registerTool(
+  "delegaitor_profile_remove",
+  {
+    title: "Remove a dispatch profile",
+    description: "Deletes a saved profile.",
+    inputSchema: { name: z.string() },
+  },
+  async ({ name }) => textResult(removeProfile(name) ? `Removed profile "${name}".` : `No profile named "${name}".`),
 );
 
 server.registerTool(
@@ -373,6 +399,116 @@ server.registerTool(
 );
 
 server.registerTool(
+  "delegaitor_branch_rename",
+  {
+    title: "Change the prefix of a session's branch",
+    description:
+      "Swaps the prefix of the session's branch (e.g. feature/ -> fix/), keeping the rest of the name. Only " +
+      "prefixes listed in the ticket prompt are allowed, and only before the branch has been pushed.",
+    inputSchema: { sessionId: z.string(), prefix: z.string().describe('e.g. "fix/"') },
+  },
+  async ({ sessionId, prefix }) => jsonResult(await renameSessionBranch(sessionId, prefix)),
+);
+
+server.registerTool(
+  "delegaitor_overview",
+  {
+    title: "What each delegated ticket needs next",
+    description:
+      "One entry per open ticket (its latest session) with `next`: unblock (agent is blocked), ship (done but no " +
+      "PR), review (PR open), address review (changes requested), close (PR merged), working, or check (failed). " +
+      "Includes the PR (via gh), the agent's summary, unread messages and held locks.",
+    inputSchema: {
+      includeFinished: z.boolean().optional(),
+      pullRequests: z.boolean().optional().describe("Look up PRs with gh (default true)"),
+    },
+  },
+  async (args) => jsonResult(await ticketOverview(args)),
+);
+
+server.registerTool(
+  "delegaitor_ticket_ship",
+  {
+    title: "Push a ticket's branch and open its pull request",
+    description:
+      "Pushes the ticket's branch and opens a PR against its base branch with a link to the ticket (or returns the " +
+      "already-open PR), then marks the session ready_for_review, which moves the board card if configured. " +
+      "Refuses with uncommitted changes or no commits. Never force-pushes. Write a real title and body summarizing " +
+      "the change for reviewers; the default body is just the commit list.",
+    inputSchema: {
+      ref: z.string().describe("Session id, ticket id, or branch name"),
+      title: z.string().optional().describe("PR title (default: ticket title)"),
+      body: z.string().optional().describe("PR description in markdown; a ticket link is appended"),
+      draft: z.boolean().optional(),
+      markReady: z.boolean().optional().describe("Mark the session ready_for_review (default true)"),
+      dryRun: z.boolean().optional(),
+    },
+  },
+  async ({ ref, ...opts }) => jsonResult(await shipTicket(ref, opts)),
+);
+
+server.registerTool(
+  "delegaitor_ticket_context",
+  {
+    title: "Get a ticket's requirements and diff for review",
+    description:
+      "Returns the ticket's title, body (including the discussion fetched from the board), the agent's summary, " +
+      "the PR, commits, diffstat, uncommitted files and the diff against the base branch (capped at maxDiffBytes).",
+    inputSchema: {
+      ref: z.string().describe("Session id, ticket id, or branch name"),
+      diff: z.boolean().optional().describe("Include the full diff (default true)"),
+      maxDiffBytes: z.number().int().positive().optional(),
+    },
+  },
+  async ({ ref, ...opts }) => jsonResult(await ticketContext(ref, opts)),
+);
+
+server.registerTool(
+  "delegaitor_session_screen",
+  {
+    title: "Read a session's terminal",
+    description: "Returns the last lines of a session's cmux tab, e.g. to see the question a blocked agent asked.",
+    inputSchema: { ref: z.string(), lines: z.number().int().positive().optional() },
+  },
+  async ({ ref, lines }) => textResult(await readSessionScreen(ref, lines)),
+);
+
+server.registerTool(
+  "delegaitor_session_nudge",
+  {
+    title: "Reply to a session's agent",
+    description:
+      "Types text into a session's agent prompt in its cmux tab and presses Enter, as if the user replied there. " +
+      "A blocked session is marked running again and its board card moved back to in progress. Newlines are sent " +
+      "as spaces. Only send what the user approved.",
+    inputSchema: { ref: z.string(), text: z.string(), resume: z.boolean().optional() },
+  },
+  async ({ ref, text, resume }) => jsonResult(await nudgeSession(ref, text, { resume })),
+);
+
+server.registerTool(
+  "delegaitor_ticket_close",
+  {
+    title: "Close a finished ticket",
+    description:
+      "Closes a delegated ticket once its work has landed: removes the worktree, deletes the local and remote " +
+      "branch, marks the session done, moves the board card to the done column (if configured), and closes the " +
+      "ticket's cmux tab last (which ends the agent running in it). Refuses if the pull request is open, the work " +
+      "isn't merged, or the worktree has uncommitted changes, unless force is true. Steps already done by hand are " +
+      "reported as 'already gone', so it's safe to re-run. Use dryRun first to preview.",
+    inputSchema: {
+      ref: z.string().describe("Session id or ticket id"),
+      force: z.boolean().optional(),
+      keepRemote: z.boolean().optional().describe("Don't delete the remote branch"),
+      keepTab: z.boolean().optional().describe("Leave the cmux tab open"),
+      summary: z.string().optional(),
+      dryRun: z.boolean().optional(),
+    },
+  },
+  async ({ ref, ...opts }) => jsonResult(await closeTicket(ref, opts)),
+);
+
+server.registerTool(
   "delegaitor_ticket_move",
   {
     title: "Move a delegated ticket on its board",
@@ -418,7 +554,7 @@ server.registerTool(
   {
     title: "Clean up all finished sessions",
     description:
-      "Finds every finished session (completed/failed/cancelled) and tears down its cmux workspace, worktree, " +
+      "Finds every finished session (completed/done/failed/cancelled) and tears down its cmux workspace, worktree, " +
       "and branch using the same safety gates as delegaitor_session_cleanup. Use dryRun first to preview.",
     inputSchema: {
       removeWorktree: CleanupModeWorktree.default("if-clean"),

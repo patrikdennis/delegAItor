@@ -6,6 +6,13 @@ import {
   persistPlan,
   listSessions,
   completeSession,
+  renameSessionBranch,
+  closeTicket,
+  shipTicket,
+  ticketOverview,
+  ticketContext,
+  readSessionScreen,
+  nudgeSession,
   cleanupSession,
   listCleanupCandidates,
   resolveExecutionPlan,
@@ -26,6 +33,16 @@ import {
   removeCredential,
   listCredentials,
   credentialsPath,
+  getProfile,
+  mergeProfile,
+  cleanProfile,
+  profileToResolveOptions,
+  profileHasTicketSource,
+  saveProfile,
+  listProfiles,
+  removeProfile,
+  profilesPath,
+  type DispatchProfile,
   type BoardStatusResult,
   type AgentRuntimeKind,
   type ExecutionPlan,
@@ -35,104 +52,82 @@ import {
 const program = new Command();
 program.name("delegaitor").description("Delegates tickets to isolated worktrees/branches and agent sessions.");
 
-program
-  .command("plan")
-  .description("Resolve tickets from input and print an execution plan without dispatching")
-  .argument("[text]", "ticket text: issue refs (#123), markdown list, or explicit ticket titles/ids/URLs")
-  .option("-f, --file <path>", "read ticket text from a file instead of the argument")
-  .option("--agent <runtime>", "default agent runtime: claude, copilot, codex, opencode", "claude")
-  .option("--repo <owner/repo>", "default repo for #123-style refs and markdown tickets")
-  .option("--repo-path <path>", "local path of --repo (defaults to cwd)")
-  .option("--base <ref>", "default base branch", "main")
-  .option("--all", "pull every ticket on shared boards (Notion/Linear/Jira), not just those assigned to you", false)
-  .option("--github-mine", "also pull open GitHub issues assigned to you in --repo", false)
-  .option("--github-comments", "also fetch each GitHub issue's comment thread as extra ticket context", false)
-  .option("--notion-db <id>", "Notion database id to also pull tickets from")
-  .option("--notion-assignee-id <id>", "Your Notion user id, for shared/workspace-owned integration tokens that can't auto-detect it")
-  .option("--notion-status <statuses>", "comma-separated Status values to delegate, exactly as they appear on your board (e.g. \"Not started,Backlog\"); default pulls every status")
-  .option("--notion-project-prop <name>", "Notion property exposing a human-readable project/initiative name (e.g. a rollup surfacing a related Project relation's title), used with --notion-project")
-  .option("--notion-project <names>", "comma-separated project/initiative names to delegate (requires --notion-project-prop); every board organizes projects differently, so there's no default")
-  .option("--notion-title-prop <name>", "Notion title property name, if not \"Name\" (e.g. \"Task\")")
-  .option("--notion-status-prop <name>", "Notion status/select property name, if not \"Status\"; used both for --notion-status filtering and --move-on-* updates")
-  .option("--notion-body-prop <name>", "Notion rich-text property to use as ticket body/spec (in addition to page content), e.g. \"Spec\"")
-  .option("--notion-no-page-content", "skip fetching each Notion page's body content (paragraphs/lists below the properties); only use --notion-body-prop if set", false)
-  .option("--linear", "also pull tickets from Linear (uses LINEAR_API_KEY)", false)
-  .option("--linear-team <key>", "restrict Linear to one team key, e.g. ENG")
-  .option("--linear-status <statuses>", "comma-separated workflow state names to delegate, exactly as they appear on your team's board; default is any non-completed/canceled state")
-  .option("--jira-project <key>", "pull tickets from this Jira project (uses JIRA_BASE_URL/JIRA_EMAIL/JIRA_API_TOKEN)")
-  .option("--jira-jql <jql>", "custom JQL, overrides the default mine/project query")
-  .option("--jira-status <statuses>", "comma-separated status names to delegate, exactly as they appear on your board; default is statusCategory != Done")
-  .option("--move-on-dispatch <status>", "board status to move each ticket to when its agent session starts, exactly as named on your board (e.g. \"In progress\")")
-  .option("--move-on-review <status>", "board status to move a ticket to when its session completes as ready_for_review (e.g. \"Ready for review\")")
-  .option("--move-on-blocked <status>", "board status to move a ticket to when its session reports blocked")
-  .option("--move-on-done <status>", "board status to move a ticket to when its session completes as done")
-  .action(async (text, opts) => {
-    const rawInput = await readInput(text, opts.file, opts);
-    const plan = await resolvePlan(rawInput, opts);
-    printPlan(plan);
-  });
+addPlanOptions(
+  program
+    .command("plan")
+    .description("Resolve tickets from input and print an execution plan without dispatching")
+    .argument("[text]", "ticket text: issue refs (#123), markdown list, or explicit ticket titles/ids/URLs")
+    .option("-f, --file <path>", "read ticket text from a file instead of the argument")
+    .option("--profile <name>", "use a saved profile (see `delegaitor profile`); flags you pass override it"),
+).action(async (text, opts) => {
+  const profile = planProfile(opts);
+  const rawInput = await readInput(text, opts.file, profile);
+  const plan = await resolveExecutionPlan(rawInput, profileToResolveOptions(profile));
+  printPlan(plan);
+});
 
-program
-  .command("dispatch")
-  .description("Resolve tickets, create worktrees/branches, and launch an agent session per ticket")
-  .argument("[text]", "ticket text: issue refs (#123), markdown list, or explicit ticket titles/ids/URLs")
-  .option("-f, --file <path>", "read ticket text from a file instead of the argument")
-  .option("--agent <runtime>", "default agent runtime: claude, copilot, codex, opencode", "claude")
-  .option("--repo <owner/repo>", "default repo for #123-style refs and markdown tickets")
-  .option("--repo-path <path>", "local path of --repo (defaults to cwd)")
-  .option("--base <ref>", "default base branch", "main")
-  .option("--all", "pull every ticket on shared boards (Notion/Linear/Jira), not just those assigned to you", false)
-  .option("--github-mine", "also pull open GitHub issues assigned to you in --repo", false)
-  .option("--github-comments", "also fetch each GitHub issue's comment thread as extra ticket context", false)
-  .option("--notion-db <id>", "Notion database id to also pull tickets from")
-  .option("--notion-assignee-id <id>", "Your Notion user id, for shared/workspace-owned integration tokens that can't auto-detect it")
-  .option("--notion-status <statuses>", "comma-separated Status values to delegate, exactly as they appear on your board (e.g. \"Not started,Backlog\"); default pulls every status")
-  .option("--notion-project-prop <name>", "Notion property exposing a human-readable project/initiative name (e.g. a rollup surfacing a related Project relation's title), used with --notion-project")
-  .option("--notion-project <names>", "comma-separated project/initiative names to delegate (requires --notion-project-prop); every board organizes projects differently, so there's no default")
-  .option("--notion-title-prop <name>", "Notion title property name, if not \"Name\" (e.g. \"Task\")")
-  .option("--notion-status-prop <name>", "Notion status/select property name, if not \"Status\"; used both for --notion-status filtering and --move-on-* updates")
-  .option("--notion-body-prop <name>", "Notion rich-text property to use as ticket body/spec (in addition to page content), e.g. \"Spec\"")
-  .option("--notion-no-page-content", "skip fetching each Notion page's body content (paragraphs/lists below the properties); only use --notion-body-prop if set", false)
-  .option("--linear", "also pull tickets from Linear (uses LINEAR_API_KEY)", false)
-  .option("--linear-team <key>", "restrict Linear to one team key, e.g. ENG")
-  .option("--linear-status <statuses>", "comma-separated workflow state names to delegate, exactly as they appear on your team's board; default is any non-completed/canceled state")
-  .option("--jira-project <key>", "pull tickets from this Jira project (uses JIRA_BASE_URL/JIRA_EMAIL/JIRA_API_TOKEN)")
-  .option("--jira-jql <jql>", "custom JQL, overrides the default mine/project query")
-  .option("--jira-status <statuses>", "comma-separated status names to delegate, exactly as they appear on your board; default is statusCategory != Done")
-  .option("--move-on-dispatch <status>", "board status to move each ticket to when its agent session starts, exactly as named on your board (e.g. \"In progress\")")
-  .option("--move-on-review <status>", "board status to move a ticket to when its session completes as ready_for_review (e.g. \"Ready for review\")")
-  .option("--move-on-blocked <status>", "board status to move a ticket to when its session reports blocked")
-  .option("--move-on-done <status>", "board status to move a ticket to when its session completes as done")
-  .option("-y, --yes", "skip confirmation prompt")
-  .action(async (text, opts) => {
-    const rawInput = await readInput(text, opts.file, opts);
-    const plan = await resolvePlan(rawInput, opts);
-    printPlan(plan);
-    if (!plan.tickets.length) return;
+addPlanOptions(
+  program
+    .command("dispatch")
+    .description("Resolve tickets, create worktrees/branches, and launch an agent session per ticket")
+    .argument("[text]", "ticket text: issue refs (#123), markdown list, or explicit ticket titles/ids/URLs")
+    .option("-f, --file <path>", "read ticket text from a file instead of the argument")
+    .option("--profile <name>", "use a saved profile (see `delegaitor profile`); flags you pass override it")
+    .option("-y, --yes", "skip confirmation prompt"),
+).action(async (text, opts) => {
+  const profile = planProfile(opts);
+  const rawInput = await readInput(text, opts.file, profile);
+  const plan = await resolveExecutionPlan(rawInput, profileToResolveOptions(profile));
+  printPlan(plan);
+  if (!plan.tickets.length) return;
 
-    if (!opts.yes) {
-      const proceed = await confirm(`Dispatch ${plan.tickets.length} ticket(s)? [y/N] `);
-      if (!proceed) {
-        console.log("Aborted.");
-        return;
-      }
+  if (!opts.yes) {
+    const proceed = await confirm(`Dispatch ${plan.tickets.length} ticket(s)? [y/N] `);
+    if (!proceed) {
+      console.log("Aborted.");
+      return;
     }
+  }
 
-    persistPlan(plan, rawInput);
-    for (const ticket of plan.tickets) {
-      process.stdout.write(`Dispatching ${ticket.id} (${ticket.agent})... `);
-      try {
-        const result = await dispatchTicket(plan, ticket);
-        console.log(
-          `${result.launch.method}${result.launch.cmuxWorkspaceId ? ` [${result.launch.cmuxWorkspaceId}]` : ""} ` +
-            `session=${result.sessionId}`,
-        );
-        printBoardStatus(result.boardStatus);
-      } catch (err) {
-        console.log(`FAILED: ${err instanceof Error ? err.message : String(err)}`);
-      }
+  persistPlan(plan, rawInput);
+  for (const ticket of plan.tickets) {
+    process.stdout.write(`Dispatching ${ticket.id} (${ticket.agent})... `);
+    try {
+      const result = await dispatchTicket(plan, ticket);
+      console.log(
+        `${result.launch.method}${result.launch.cmuxWorkspaceId ? ` [${result.launch.cmuxWorkspaceId}]` : ""} ` +
+          `session=${result.sessionId}`,
+      );
+      printBoardStatus(result.boardStatus);
+    } catch (err) {
+      console.log(`FAILED: ${err instanceof Error ? err.message : String(err)}`);
     }
-    await notifyCmux("delegAItor", `Dispatched ${plan.tickets.length} ticket(s)`);
+  }
+  await notifyCmux("delegAItor", `Dispatched ${plan.tickets.length} ticket(s)`);
+});
+
+program
+  .command("overview")
+  .description("What each open ticket needs next: unblock, ship, review, or close (with PR state from gh)")
+  .option("--all", "include finished tickets", false)
+  .option("--no-prs", "skip looking up pull requests (faster, works offline)")
+  .option("--json", "print as JSON", false)
+  .action(async (opts) => {
+    const items = await ticketOverview({ includeFinished: opts.all, pullRequests: opts.prs });
+    if (opts.json) return console.log(JSON.stringify(items, null, 2));
+    if (!items.length) return console.log("No open tickets.");
+    for (const i of items) {
+      console.log(`\n${i.next.toUpperCase().padEnd(15)} ${i.title}`);
+      console.log(`  ${i.nextHint}`);
+      console.log(
+        `  ticket ${i.ticketId}  session ${i.sessionId} [${i.sessionStatus}]  branch ${i.branch}` +
+          (i.cmuxWorkspaceId ? `  ${i.cmuxWorkspaceId}` : ""),
+      );
+      if (i.pullRequest) console.log(`  PR #${i.pullRequest.number} ${i.pullRequest.state.toLowerCase()}: ${i.pullRequest.url}`);
+      if (i.summary) console.log(`  summary: ${i.summary}`);
+      if (i.locks.length) console.log(`  holding locks: ${i.locks.join(", ")}`);
+      for (const m of i.unreadMessages) console.log(`  unread [${m.kind}] from ${m.fromSessionId}: ${m.body}`);
+    }
   });
 
 program
@@ -155,6 +150,55 @@ program
       }
     }
     if (!rows.length) console.log("No tickets found.");
+  });
+
+const profileCmd = program
+  .command("profile")
+  .description("Saved plan/dispatch options, so you can run e.g. `delegaitor dispatch --profile sales-engine`");
+addPlanOptions(
+  profileCmd
+    .command("save")
+    .description(
+      "Save the given flags as a profile. Without --merge this replaces the profile; with it, only the flags " +
+        "you pass change. A repo without --repo-path gets the current directory.",
+    )
+    .argument("<name>")
+    .option("--description <text>", "what this profile is for, shown in `profile list`")
+    .option("--merge", "update an existing profile instead of replacing it"),
+).action((name, opts) => {
+  try {
+    const saved = saveProfile(name, { ...cliProfile(opts), description: opts.description }, { merge: opts.merge });
+    console.log(`Saved profile "${name}" to ${profilesPath()}:`);
+    console.log(JSON.stringify(saved, null, 2));
+  } catch (e) {
+    console.error(`Error: ${(e as Error).message}`);
+    process.exit(1);
+  }
+});
+profileCmd
+  .command("list")
+  .action(() => {
+    const all = listProfiles();
+    const names = Object.keys(all);
+    if (!names.length) console.log("No profiles yet. Create one with `delegaitor profile save <name> <flags>`.");
+    for (const n of names) console.log(`${n.padEnd(20)} ${all[n].description ?? ""}`);
+  });
+profileCmd
+  .command("show")
+  .argument("<name>")
+  .action((name) => {
+    try {
+      console.log(JSON.stringify(getProfile(name), null, 2));
+    } catch (e) {
+      console.error(`Error: ${(e as Error).message}`);
+      process.exit(1);
+    }
+  });
+profileCmd
+  .command("remove")
+  .argument("<name>")
+  .action((name) => {
+    console.log(removeProfile(name) ? `Removed profile "${name}".` : `No profile named "${name}".`);
   });
 
 const lock = program.command("lock").description("Advisory resource locks between concurrent sessions");
@@ -228,6 +272,89 @@ message
 
 const ticket = program.command("ticket").description("Manage delegated tickets");
 ticket
+  .command("ship")
+  .description(
+    "Push a ticket's branch and open a pull request linking the ticket (or reuse the open one), then mark it " +
+      "ready_for_review so the board card moves. Refuses with uncommitted changes. Never force-pushes.",
+  )
+  .argument("<ref>", "session id, ticket id, or branch name")
+  .option("--title <text>", "PR title (default: the ticket title)")
+  .option("--body <text>", "PR description (default: the commit list); a link to the ticket is always added")
+  .option("--draft", "open the PR as a draft", false)
+  .option("--no-mark-ready", "don't mark the session ready_for_review")
+  .option("--dry-run", "report what would happen without pushing or opening a PR", false)
+  .action(async (ref, opts) => {
+    const r = await shipTicket(ref, {
+      title: opts.title,
+      body: opts.body,
+      draft: opts.draft,
+      markReady: opts.markReady,
+      dryRun: opts.dryRun,
+    }).catch(fail);
+    console.log(`${r.dryRun ? "[dry-run] " : ""}ticket ${r.ticketId}  branch ${r.branch} -> ${r.baseRef}`);
+    console.log(`  ${r.commits.length} commit(s): ${r.commits.join("; ")}`);
+    console.log(`  push: ${r.pushed}`);
+    if (r.pullRequest) {
+      console.log(`  PR #${r.pullRequest.number} ${r.pullRequest.created ? "opened" : "already open"}: ${r.pullRequest.url}`);
+    } else if (r.pullRequestError) {
+      console.log(`  PR: could not open: ${r.pullRequestError}`);
+    }
+    for (const w of r.warnings) console.log(`  warning: ${w}`);
+    printBoardStatus(r.boardStatus);
+    if (r.pullRequestError) process.exitCode = 1;
+  });
+ticket
+  .command("context")
+  .description("Print a ticket's text, commits and diff against its base branch, e.g. to review it")
+  .argument("<ref>", "session id, ticket id, or branch name")
+  .option("--no-diff", "leave out the full diff (keeps the diffstat)")
+  .option("--json", "print as JSON", false)
+  .action(async (ref, opts) => {
+    const c = await ticketContext(ref, { diff: opts.diff }).catch(fail);
+    if (opts.json) return console.log(JSON.stringify(c, null, 2));
+    console.log(`# ${c.title}\n${c.externalUrl ?? ""}\n\n${c.body ?? "(no ticket body)"}\n`);
+    console.log(`Branch ${c.branch} -> ${c.baseRef}   session ${c.sessionId} [${c.sessionStatus}]`);
+    if (c.pullRequest) console.log(`PR #${c.pullRequest.number} ${c.pullRequest.state}: ${c.pullRequest.url}`);
+    if (c.summary) console.log(`Agent summary: ${c.summary}`);
+    console.log(`\nCommits:\n${c.commits.map((l) => `  ${l}`).join("\n") || "  (none)"}`);
+    if (c.uncommitted.length) console.log(`\nUncommitted:\n${c.uncommitted.map((l) => `  ${l}`).join("\n")}`);
+    console.log(`\n${c.diffStat}`);
+    if (c.diff) console.log(`\n${c.diff}${c.diffTruncated ? "\n... (diff truncated)" : ""}`);
+  });
+ticket
+  .command("close")
+  .description(
+    "Close a finished ticket: remove its worktree, delete the local and remote branch, mark the session done, " +
+      "move the board card to done, and close its cmux tab. Refuses if the work isn't merged unless --force.",
+  )
+  .argument("<ref>", "session id or ticket id")
+  .option("--force", "close even if not merged or the worktree has uncommitted changes", false)
+  .option("--keep-remote", "don't delete the remote branch", false)
+  .option("--keep-tab", "leave the cmux tab open", false)
+  .option("--summary <text>", "session summary (default: \"Merged as PR #N\" when a merged PR is found)")
+  .option("--dry-run", "report what would happen without changing anything", false)
+  .action(async (ref, opts) => {
+    const report = await closeTicket(ref, {
+      force: opts.force,
+      keepRemote: opts.keepRemote,
+      keepTab: opts.keepTab,
+      summary: opts.summary,
+      dryRun: opts.dryRun,
+    }).catch((e: Error) => {
+      console.error(`Error: ${e.message}`);
+      process.exit(1);
+    });
+    const pr = report.pullRequest;
+    console.log(
+      `${report.dryRun ? "[dry-run] " : ""}ticket ${report.ticketId}  session ${report.sessionId}` +
+        (pr ? `  PR #${pr.number} ${pr.state.toLowerCase()}` : ""),
+    );
+    for (const st of report.steps) {
+      console.log(`  ${st.step.padEnd(22)} ${st.result}${st.detail ? `  (${st.detail})` : ""}`);
+    }
+    printBoardStatus(report.boardStatus);
+  });
+ticket
   .command("move")
   .description("Move a delegated ticket on its board to the status configured for a lifecycle stage (e.g. to retry a failed update)")
   .requiredOption("--ticket <id>")
@@ -298,6 +425,37 @@ session
     console.log("OK");
   });
 session
+  .command("screen")
+  .description("Print the last lines of a session's cmux tab, e.g. to see what a blocked agent asked")
+  .argument("<ref>", "session id, ticket id, or branch name")
+  .option("--lines <n>", "number of lines", "80")
+  .action(async (ref, opts) => {
+    console.log(await readSessionScreen(ref, Number(opts.lines)).catch(fail));
+  });
+session
+  .command("nudge")
+  .description("Type a reply into a session's agent prompt (in its cmux tab) and press Enter; resumes a blocked session")
+  .argument("<ref>", "session id, ticket id, or branch name")
+  .argument("<text...>", "what to tell the agent")
+  .option("--no-resume", "don't mark a blocked session running again")
+  .action(async (ref, text: string[], opts) => {
+    const r = await nudgeSession(ref, text.join(" "), { resume: opts.resume }).catch(fail);
+    console.log(`Sent to session ${r.sessionId}${r.resumed ? " (resumed from blocked)" : ""}.`);
+    printBoardStatus(r.boardStatus);
+  });
+session
+  .command("rename-branch")
+  .description("Swap the prefix of a session's branch (e.g. feature/ -> fix/) before it's pushed")
+  .requiredOption("--session <id>")
+  .requiredOption("--prefix <prefix>", "e.g. fix/")
+  .action(async (opts) => {
+    const r = await renameSessionBranch(opts.session, opts.prefix).catch((e: Error) => {
+      console.error(`Error: ${e.message}`);
+      process.exit(1);
+    });
+    console.log(r.oldBranch === r.newBranch ? `Unchanged: ${r.newBranch}` : `Renamed ${r.oldBranch} -> ${r.newBranch}`);
+  });
+session
   .command("cleanup")
   .description("Tear down one finished session's resources (cmux tab, worktree, branch)")
   .requiredOption("--session <id>")
@@ -358,23 +516,14 @@ program.parseAsync(process.argv);
 // Any ticket-source flag lets you skip the raw-text argument entirely, since
 // these pull tickets directly from an API rather than parsing #123-refs or a
 // markdown list out of freeform text.
-function hasExternalTicketSource(opts: {
-  githubMine?: boolean;
-  notionDb?: string;
-  linear?: boolean;
-  jiraProject?: string;
-  jiraJql?: string;
-}): boolean {
-  return Boolean(opts.githubMine || opts.notionDb || opts.linear || opts.jiraProject || opts.jiraJql);
-}
 
 async function readInput(
   text: string | undefined,
   file: string | undefined,
-  opts: { githubMine?: boolean; notionDb?: string; linear?: boolean; jiraProject?: string; jiraJql?: string }
+  profile: DispatchProfile,
 ): Promise<string> {
   const input = text ?? (file ? readFileSync(file, "utf8") : await readStdinIfPiped()) ?? "";
-  if (!input.trim() && !hasExternalTicketSource(opts)) {
+  if (!input.trim() && !profileHasTicketSource(profile)) {
     console.error(
       "No ticket text provided (pass an argument, --file, pipe via stdin, or use a ticket-source flag " +
         "like --notion-db, --linear, --jira-project, or --github-mine)."
@@ -384,69 +533,98 @@ async function readInput(
   return input;
 }
 
-async function resolvePlan(
-  input: string,
-  opts: {
-    agent: string;
-    repo?: string;
-    repoPath?: string;
-    base: string;
-    all?: boolean;
-    githubMine?: boolean;
-    githubComments?: boolean;
-    notionDb?: string;
-    notionAssigneeId?: string;
-    notionStatus?: string;
-    notionTitleProp?: string;
-    notionStatusProp?: string;
-    notionBodyProp?: string;
-    notionProjectProp?: string;
-    notionProject?: string;
-    notionNoPageContent?: boolean;
-    linear?: boolean;
-    linearTeam?: string;
-    linearStatus?: string;
-    jiraProject?: string;
-    jiraJql?: string;
-    jiraStatus?: string;
-    moveOnDispatch?: string;
-    moveOnReview?: string;
-    moveOnBlocked?: string;
-    moveOnDone?: string;
-  },
-): Promise<ExecutionPlan> {
-  return resolveExecutionPlan(input, {
-    defaultAgent: opts.agent as AgentRuntimeKind,
+/** Every option shared by plan, dispatch and profile save. */
+function addPlanOptions(cmd: Command): Command {
+  return cmd
+    .option("--agent <runtime>", "default agent runtime: claude, copilot, codex, opencode (default: claude)")
+    .option("--repo <owner/repo>", "default repo for #123-style refs and markdown tickets")
+    .option("--repo-path <path>", "local path of --repo (defaults to cwd)")
+    .option("--base <ref>", "default base branch (default: main)")
+    .option("--branch-prefix <prefix>", "force this prefix on every branch, e.g. \"fix/\" (\"\" for none); default: picked per ticket")
+    .option("--branch-rules <file>", "branch-prefixes.json describing your team's prefixes (default: <repo>/.delegaitor/branch-prefixes.json, then ~/.delegaitor/branch-prefixes.json, then detected from the repo's branches)")
+    .option("--all", "pull every ticket on shared boards (Notion/Linear/Jira), not just those assigned to you")
+    .option("--github-mine", "also pull open GitHub issues assigned to you in --repo")
+    .option("--github-comments", "also fetch each GitHub issue's comment thread as extra ticket context")
+    .option("--notion-db <id>", "Notion database id to also pull tickets from")
+    .option("--notion-assignee-id <id>", "Your Notion user id, for shared/workspace-owned integration tokens that can't auto-detect it")
+    .option("--notion-status <statuses>", "comma-separated Status values to delegate, exactly as they appear on your board (e.g. \"Not started,Backlog\"); default pulls every status")
+    .option("--notion-project-prop <name>", "Notion property exposing a human-readable project/initiative name (e.g. a rollup surfacing a related Project relation's title), used with --notion-project")
+    .option("--notion-project <names>", "comma-separated project/initiative names to delegate (requires --notion-project-prop); every board organizes projects differently, so there's no default")
+    .option("--notion-title-prop <name>", "Notion title property name, if not \"Name\" (e.g. \"Task\")")
+    .option("--notion-status-prop <name>", "Notion status/select property name, if not \"Status\"; used both for --notion-status filtering and --move-on-* updates")
+    .option("--notion-body-prop <name>", "Notion rich-text property to use as ticket body/spec (in addition to page content), e.g. \"Spec\"")
+    .option("--notion-no-page-content", "skip fetching each Notion page's body content (paragraphs/lists below the properties); only use --notion-body-prop if set")
+    .option("--linear", "also pull tickets from Linear (uses LINEAR_API_KEY)")
+    .option("--linear-team <key>", "restrict Linear to one team key, e.g. ENG")
+    .option("--linear-status <statuses>", "comma-separated workflow state names to delegate, exactly as they appear on your team's board; default is any non-completed/canceled state")
+    .option("--jira-project <key>", "pull tickets from this Jira project (uses JIRA_BASE_URL/JIRA_EMAIL/JIRA_API_TOKEN)")
+    .option("--jira-jql <jql>", "custom JQL, overrides the default mine/project query")
+    .option("--jira-status <statuses>", "comma-separated status names to delegate, exactly as they appear on your board; default is statusCategory != Done")
+    .option("--move-on-dispatch <status>", "board status to move each ticket to when its agent session starts, exactly as named on your board (e.g. \"In progress\")")
+    .option("--move-on-review <status>", "board status to move a ticket to when its session completes as ready_for_review (e.g. \"Ready for review\")")
+    .option("--move-on-blocked <status>", "board status to move a ticket to when its session reports blocked")
+    .option("--move-on-done <status>", "board status to move a ticket to when its session completes as done");
+}
+
+type PlanCliOptions = {
+  profile?: string;
+  agent?: string;
+  repo?: string;
+  repoPath?: string;
+  base?: string;
+  branchPrefix?: string;
+  branchRules?: string;
+  all?: boolean;
+  githubMine?: boolean;
+  githubComments?: boolean;
+  notionDb?: string;
+  notionAssigneeId?: string;
+  notionStatus?: string;
+  notionTitleProp?: string;
+  notionStatusProp?: string;
+  notionBodyProp?: string;
+  notionProjectProp?: string;
+  notionProject?: string;
+  notionNoPageContent?: boolean;
+  linear?: boolean;
+  linearTeam?: string;
+  linearStatus?: string;
+  jiraProject?: string;
+  jiraJql?: string;
+  jiraStatus?: string;
+  moveOnDispatch?: string;
+  moveOnReview?: string;
+  moveOnBlocked?: string;
+  moveOnDone?: string;
+};
+
+/** The flags actually passed, in profile form. Unset flags are left undefined so they don't override a profile. */
+function cliProfile(opts: PlanCliOptions): DispatchProfile {
+  return cleanProfile({
+    agent: opts.agent,
     repo: opts.repo,
     repoPath: opts.repoPath,
     base: opts.base,
+    branchPrefix: opts.branchPrefix,
+    branchRules: opts.branchRules,
     all: opts.all,
-    github: { mine: opts.githubMine, comments: opts.githubComments },
-    notion: opts.notionDb
-      ? {
-          databaseId: opts.notionDb,
-          assigneeUserId: opts.notionAssigneeId,
-          readyStatuses: parseStatusList(opts.notionStatus),
-          projects: parseStatusList(opts.notionProject),
-          properties:
-            opts.notionTitleProp || opts.notionStatusProp || opts.notionBodyProp || opts.notionProjectProp
-              ? {
-                  title: opts.notionTitleProp,
-                  status: opts.notionStatusProp,
-                  body: opts.notionBodyProp,
-                  project: opts.notionProjectProp,
-                }
-              : undefined,
-          includePageContent: !opts.notionNoPageContent,
-        }
-      : undefined,
-    linear: opts.linear
-      ? { teamKey: opts.linearTeam, stateNames: parseStatusList(opts.linearStatus) }
-      : undefined,
-    jira:
-      opts.jiraProject || opts.jiraJql
-        ? { project: opts.jiraProject, jql: opts.jiraJql, statuses: parseStatusList(opts.jiraStatus) }
-        : undefined,
+    githubMine: opts.githubMine,
+    githubComments: opts.githubComments,
+    notionDatabaseId: opts.notionDb,
+    notionAssigneeId: opts.notionAssigneeId,
+    notionStatuses: parseStatusList(opts.notionStatus),
+    notionTitleProp: opts.notionTitleProp,
+    notionStatusProp: opts.notionStatusProp,
+    notionBodyProp: opts.notionBodyProp,
+    notionProjectProp: opts.notionProjectProp,
+    notionProjects: parseStatusList(opts.notionProject),
+    notionIncludePageContent: opts.notionNoPageContent ? false : undefined,
+    linear: opts.linear,
+    linearTeamKey: opts.linearTeam,
+    linearStatuses: parseStatusList(opts.linearStatus),
+    jiraProject: opts.jiraProject,
+    jiraJql: opts.jiraJql,
+    jiraStatuses: parseStatusList(opts.jiraStatus),
     boardStatuses: {
       in_progress: opts.moveOnDispatch,
       ready_for_review: opts.moveOnReview,
@@ -454,6 +632,22 @@ async function resolvePlan(
       done: opts.moveOnDone,
     },
   });
+}
+
+function planProfile(opts: PlanCliOptions): DispatchProfile {
+  const flags = cliProfile(opts);
+  if (!opts.profile) return flags;
+  try {
+    return mergeProfile(getProfile(opts.profile), flags);
+  } catch (e) {
+    console.error(`Error: ${(e as Error).message}`);
+    process.exit(1);
+  }
+}
+
+function fail(e: Error): never {
+  console.error(`Error: ${e.message}`);
+  process.exit(1);
 }
 
 function printBoardStatus(result: BoardStatusResult | undefined): void {
@@ -501,6 +695,7 @@ function printPlan(plan: ExecutionPlan): void {
     console.log(
       `${t.id}  [${t.agent}]  ${t.title}\n` +
         `  repo=${t.repoId}  branch=${t.branch}  base=${t.baseRef}\n` +
+        (t.branchNaming ? `  prefix=${t.branchNaming.prefix || "(none)"}  (${t.branchNaming.reason})\n` : "") +
         (t.dependsOn?.length ? `  depends_on=${t.dependsOn.join(",")}\n` : "") +
         (t.conflictsWith.length ? `  ⚠ possible conflict with: ${t.conflictsWith.join(", ")}\n` : ""),
     );
