@@ -3,11 +3,12 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { getDb } from "./db.js";
 import { promptsDir } from "./paths.js";
-import type { ExecutionPlan, PlannedTicket } from "./types.js";
+import type { BranchNaming, ExecutionPlan, PlannedTicket } from "./types.js";
 import { createWorktree, removeWorktree, isWorktreeClean, isBranchMerged, deleteLocalBranch, remoteBranchExists, deleteRemoteBranch } from "./worktree/git.js";
 import { buildAgentCommand } from "./agents/runtimes.js";
 import { launchSession, closeCmuxWorkspace, notifyCmux } from "./agents/launch.js";
 import { buildTicketPrompt } from "./agents/prompt.js";
+import { execa } from "execa";
 import { releaseAllLocks } from "./sync/locks.js";
 import { syncBoardStatus, isBoardLifecycle, type BoardStatusResult } from "./tickets/board-status.js";
 
@@ -20,8 +21,8 @@ export function persistPlan(plan: ExecutionPlan, rawPrompt: string): void {
   // Upsert instead of a plain INSERT so that doesn't hit tickets.id's
   // PRIMARY KEY constraint.
   const insertTicket = db.prepare(`
-    INSERT INTO tickets (id, run_id, source, external_id, external_url, title, body, repo_id, repo_path, base_ref, depends_on, board_sync_json)
-    VALUES (@id, @runId, @source, @externalId, @externalUrl, @title, @body, @repoId, @repoPath, @baseRef, @dependsOn, @boardSyncJson)
+    INSERT INTO tickets (id, run_id, source, external_id, external_url, title, body, repo_id, repo_path, base_ref, depends_on, board_sync_json, branch_naming_json)
+    VALUES (@id, @runId, @source, @externalId, @externalUrl, @title, @body, @repoId, @repoPath, @baseRef, @dependsOn, @boardSyncJson, @branchNamingJson)
     ON CONFLICT(id) DO UPDATE SET
       run_id = excluded.run_id,
       source = excluded.source,
@@ -34,6 +35,7 @@ export function persistPlan(plan: ExecutionPlan, rawPrompt: string): void {
       base_ref = excluded.base_ref,
       depends_on = excluded.depends_on,
       board_sync_json = excluded.board_sync_json,
+      branch_naming_json = excluded.branch_naming_json,
       status = 'pending',
       updated_at = datetime('now')
   `);
@@ -53,6 +55,7 @@ export function persistPlan(plan: ExecutionPlan, rawPrompt: string): void {
         baseRef: t.baseRef ?? "main",
         dependsOn: t.dependsOn?.length ? JSON.stringify(t.dependsOn) : null,
         boardSyncJson: t.boardSync ? JSON.stringify(t.boardSync) : null,
+        branchNamingJson: t.branchNaming ? JSON.stringify(t.branchNaming) : null,
       });
     }
   });
@@ -175,6 +178,67 @@ export async function completeSession(
     }
   }
   return {};
+}
+
+export interface RenameBranchResult {
+  oldBranch: string;
+  newBranch: string;
+}
+
+/**
+ * Swaps the prefix of a session's branch (e.g. feature/... -> fix/...),
+ * keeping the rest of the name. Lets the agent correct the prefix
+ * delegAItor guessed before it had read the ticket. Refuses once the
+ * branch has been pushed, since renaming then would orphan the remote
+ * branch and any pull request opened from it.
+ */
+export async function renameSessionBranch(sessionId: string, newPrefix: string): Promise<RenameBranchResult> {
+  const row = getDb()
+    .prepare(
+      `SELECT s.branch, s.worktree_path as worktreePath, t.id as ticketId, t.repo_path as repoPath,
+              t.branch_naming_json as namingJson
+       FROM sessions s JOIN tickets t ON t.id = s.ticket_id WHERE s.id = ?`,
+    )
+    .get(sessionId) as
+    | { branch: string; worktreePath: string; ticketId: string; repoPath: string; namingJson: string | null }
+    | undefined;
+  if (!row) throw new Error(`Unknown session id: ${sessionId}`);
+
+  const naming = row.namingJson ? (JSON.parse(row.namingJson) as BranchNaming) : undefined;
+  if (naming?.locked) {
+    throw new Error(`The branch prefix was set explicitly with --branch-prefix ("${naming.prefix}"), so it can't be changed.`);
+  }
+  const prefix = newPrefix.trim() && !newPrefix.trim().endsWith("/") ? `${newPrefix.trim()}/` : newPrefix.trim();
+  if (naming?.options.length && !naming.options.some((o) => o.prefix === prefix)) {
+    throw new Error(
+      `"${prefix}" is not one of this repo's branch prefixes (${naming.options.map((o) => o.prefix).join(", ")}).`,
+    );
+  }
+
+  const idStart = row.branch.indexOf(row.ticketId);
+  if (idStart < 0) throw new Error(`Branch "${row.branch}" doesn't contain the ticket id; rename it manually.`);
+  const newBranch = `${prefix}${row.branch.slice(idStart)}`;
+  if (newBranch === row.branch) return { oldBranch: row.branch, newBranch };
+
+  await execa("git", ["check-ref-format", "--branch", newBranch]).catch(() => {
+    throw new Error(`"${newBranch}" is not a valid branch name.`);
+  });
+  const hasUpstream = await execa("git", ["rev-parse", "--abbrev-ref", "@{u}"], { cwd: row.worktreePath })
+    .then(() => true)
+    .catch(() => false);
+  if (hasUpstream || (await remoteBranchExists(row.repoPath, row.branch))) {
+    throw new Error(`"${row.branch}" has already been pushed; renaming it now would orphan the remote branch.`);
+  }
+
+  await execa("git", ["branch", "-m", row.branch, newBranch], { cwd: row.worktreePath });
+  getDb().prepare(`UPDATE sessions SET branch = ? WHERE id = ?`).run(newBranch, sessionId);
+  if (naming) {
+    const updated: BranchNaming = { ...naming, prefix, reason: "changed by the agent after reading the ticket" };
+    getDb()
+      .prepare(`UPDATE tickets SET branch_naming_json = ?, updated_at = datetime('now') WHERE id = ?`)
+      .run(JSON.stringify(updated), row.ticketId);
+  }
+  return { oldBranch: row.branch, newBranch };
 }
 
 export interface CleanupOptions {
@@ -321,7 +385,7 @@ export function listCleanupCandidates(filter?: { onlyFinished?: boolean }): Clea
     WHERE 1=1
   `;
   if (filter?.onlyFinished ?? true) {
-    sql += ` AND s.status IN ('completed', 'failed', 'cancelled')`;
+    sql += ` AND s.status IN ('completed', 'done', 'failed', 'cancelled')`;
   }
   sql += ` ORDER BY s.started_at ASC`;
   return db.prepare(sql).all() as CleanupCandidate[];
