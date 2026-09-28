@@ -41,11 +41,28 @@ export function findSession(ref: string): SessionTicket {
     (db.prepare(`${SESSION_SQL} WHERE s.id = ?`).get(r) as SessionTicket | undefined) ??
     (db
       .prepare(`${SESSION_SQL} WHERE t.id = ? OR t.external_id = ? OR s.branch = ? ORDER BY s.started_at DESC LIMIT 1`)
-      .get(r, r, r) as SessionTicket | undefined);
+      .get(r, r, r) as SessionTicket | undefined) ??
+    findByIdPrefix(r);
   if (!row) {
     throw new Error(`No delegAItor session found for "${ref}" (pass a session id, ticket id, or branch name).`);
   }
   return row;
+}
+
+/** A short id like "274e2f8c": a unique session-id prefix, else the latest session of a unique ticket-id prefix. */
+function findByIdPrefix(r: string): SessionTicket | undefined {
+  if (!/^[0-9a-f-]{6,}$/i.test(r)) return undefined;
+  const db = getDb();
+  const pattern = `${r.replace(/[%_]/g, "")}%`;
+  const sessions = db.prepare(`${SESSION_SQL} WHERE s.id LIKE ? LIMIT 2`).all(pattern) as SessionTicket[];
+  if (sessions.length > 1) throw new Error(`"${r}" matches more than one session; use more characters.`);
+  if (sessions.length === 1) return sessions[0];
+  const tickets = db.prepare(`SELECT id FROM tickets WHERE id LIKE ? LIMIT 2`).all(pattern) as { id: string }[];
+  if (tickets.length > 1) throw new Error(`"${r}" matches more than one ticket; use more characters.`);
+  if (tickets.length === 0) return undefined;
+  return db
+    .prepare(`${SESSION_SQL} WHERE t.id = ? ORDER BY s.started_at DESC LIMIT 1`)
+    .get(tickets[0].id) as SessionTicket | undefined;
 }
 
 /** The latest session of every ticket, newest ticket first. */
