@@ -1,5 +1,6 @@
 import type { NormalizedTicket, TicketSource } from "../types.js";
 import { parseWantedLines } from "./util.js";
+import { getCredential } from "../credentials.js";
 
 export interface JiraSourceOptions {
   /** e.g. "https://your-domain.atlassian.net" */
@@ -40,9 +41,9 @@ export interface JiraSourceOptions {
  * filtering.
  */
 export function jiraTicketSource(opts: JiraSourceOptions): TicketSource {
-  const baseUrl = opts.baseUrl ?? process.env.JIRA_BASE_URL;
-  const email = opts.email ?? process.env.JIRA_EMAIL;
-  const apiToken = opts.apiToken ?? process.env.JIRA_API_TOKEN;
+  const baseUrl = opts.baseUrl ?? getCredential("JIRA_BASE_URL");
+  const email = opts.email ?? getCredential("JIRA_EMAIL");
+  const apiToken = opts.apiToken ?? getCredential("JIRA_API_TOKEN");
 
   return {
     kind: "jira",
@@ -107,6 +108,7 @@ export function jiraTicketSource(opts: JiraSourceOptions): TicketSource {
           body: adfToPlainText(issue.fields.description),
           repoId: opts.defaultRepoId,
           repoPath: opts.defaultRepoPath,
+          boardTarget: { source: "jira", baseUrl },
         });
       }
       return tickets;

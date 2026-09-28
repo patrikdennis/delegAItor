@@ -87,6 +87,12 @@ function migrate(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_messages_unread
       ON messages(to_ticket_id, read_at);
   `);
+
+  // Columns added after the initial schema; SQLite has no ADD COLUMN IF NOT EXISTS.
+  const ticketCols = new Set((db.prepare(`PRAGMA table_info(tickets)`).all() as { name: string }[]).map((c) => c.name));
+  if (!ticketCols.has("board_sync_json")) {
+    db.exec(`ALTER TABLE tickets ADD COLUMN board_sync_json TEXT`);
+  }
 }
 
 export function closeDb(): void {

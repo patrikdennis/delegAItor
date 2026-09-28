@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { BoardSync, BoardTarget } from "./tickets/board-status.js";
 
 export const TicketSourceKind = z.enum([
   "github",
@@ -26,6 +27,8 @@ export interface NormalizedTicket {
   baseRef?: string;
   /** externalIds of other tickets in the same batch this one depends on. */
   dependsOn?: string[];
+  /** Where to move this ticket on its board, for sources that support it. */
+  boardTarget?: BoardTarget;
 }
 
 export interface TicketSource {
@@ -40,6 +43,8 @@ export interface PlannedTicket extends NormalizedTicket {
   worktreePath: string;
   agent: AgentRuntimeKind;
   conflictsWith: string[];
+  /** Board-status sync config, set only when status names were configured. */
+  boardSync?: BoardSync;
 }
 
 export interface ExecutionPlan {

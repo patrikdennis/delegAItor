@@ -11,3 +11,4 @@ export * from "./agents/prompt.js";
 export * from "./sync/locks.js";
 export * from "./sync/messages.js";
 export * from "./resolve.js";
+export * from "./credentials.js";

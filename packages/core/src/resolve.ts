@@ -11,6 +11,7 @@ import {
   type NotionSourceOptions,
   type LinearSourceOptions,
   type JiraSourceOptions,
+  type BoardStatusMap,
 } from "./tickets/index.js";
 
 export interface ResolveExecutionPlanOptions {
@@ -47,6 +48,14 @@ export interface ResolveExecutionPlanOptions {
   >;
   linear?: Pick<LinearSourceOptions, "apiKey" | "teamKey" | "apiUrl" | "stateNames">;
   jira?: Pick<JiraSourceOptions, "baseUrl" | "email" | "apiToken" | "project" | "jql" | "statuses">;
+  /**
+   * Board status names to move tickets to at each point of their
+   * lifecycle, exactly as they appear on the board (e.g.
+   * `{ in_progress: "In progress", ready_for_review: "Ready for review" }`).
+   * Only applies to sources that support it (Notion, Linear, Jira); points
+   * without a name are left alone.
+   */
+  boardStatuses?: BoardStatusMap;
 }
 
 /**
@@ -116,7 +125,16 @@ export async function resolveExecutionPlan(
     }
   }
 
-  return buildPlan(resolved, { defaultAgent: opts.defaultAgent, agentOverrides: opts.agentOverrides });
+  const plan = buildPlan(resolved, { defaultAgent: opts.defaultAgent, agentOverrides: opts.agentOverrides });
+  const statuses = Object.fromEntries(
+    Object.entries(opts.boardStatuses ?? {}).filter(([, name]) => !!name?.trim()),
+  ) as BoardStatusMap;
+  if (Object.keys(statuses).length) {
+    for (const t of plan.tickets) {
+      if (t.boardTarget) t.boardSync = { target: t.boardTarget, statuses };
+    }
+  }
+  return plan;
 }
 
 async function inferRepoId(repoPath: string): Promise<string> {

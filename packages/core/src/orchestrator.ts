@@ -9,6 +9,7 @@ import { buildAgentCommand } from "./agents/runtimes.js";
 import { launchSession, closeCmuxWorkspace, notifyCmux } from "./agents/launch.js";
 import { buildTicketPrompt } from "./agents/prompt.js";
 import { releaseAllLocks } from "./sync/locks.js";
+import { syncBoardStatus, isBoardLifecycle, type BoardStatusResult } from "./tickets/board-status.js";
 
 export function persistPlan(plan: ExecutionPlan, rawPrompt: string): void {
   const db = getDb();
@@ -19,8 +20,8 @@ export function persistPlan(plan: ExecutionPlan, rawPrompt: string): void {
   // Upsert instead of a plain INSERT so that doesn't hit tickets.id's
   // PRIMARY KEY constraint.
   const insertTicket = db.prepare(`
-    INSERT INTO tickets (id, run_id, source, external_id, external_url, title, body, repo_id, repo_path, base_ref, depends_on)
-    VALUES (@id, @runId, @source, @externalId, @externalUrl, @title, @body, @repoId, @repoPath, @baseRef, @dependsOn)
+    INSERT INTO tickets (id, run_id, source, external_id, external_url, title, body, repo_id, repo_path, base_ref, depends_on, board_sync_json)
+    VALUES (@id, @runId, @source, @externalId, @externalUrl, @title, @body, @repoId, @repoPath, @baseRef, @dependsOn, @boardSyncJson)
     ON CONFLICT(id) DO UPDATE SET
       run_id = excluded.run_id,
       source = excluded.source,
@@ -32,6 +33,7 @@ export function persistPlan(plan: ExecutionPlan, rawPrompt: string): void {
       repo_path = excluded.repo_path,
       base_ref = excluded.base_ref,
       depends_on = excluded.depends_on,
+      board_sync_json = excluded.board_sync_json,
       status = 'pending',
       updated_at = datetime('now')
   `);
@@ -50,6 +52,7 @@ export function persistPlan(plan: ExecutionPlan, rawPrompt: string): void {
         repoPath: t.repoPath,
         baseRef: t.baseRef ?? "main",
         dependsOn: t.dependsOn?.length ? JSON.stringify(t.dependsOn) : null,
+        boardSyncJson: t.boardSync ? JSON.stringify(t.boardSync) : null,
       });
     }
   });
@@ -61,6 +64,8 @@ export interface DispatchResult {
   sessionId: string;
   worktreePath: string;
   launch: Awaited<ReturnType<typeof launchSession>>;
+  /** Result of moving the source ticket to its "in progress" board status, if configured. */
+  boardStatus?: BoardStatusResult;
 }
 
 /**
@@ -106,7 +111,9 @@ export async function dispatchTicket(plan: ExecutionPlan, ticket: PlannedTicket)
     ticket.id,
   );
 
-  return { ticket, sessionId, worktreePath, launch };
+  const boardStatus = await syncBoardStatus(ticket.id, "in_progress");
+
+  return { ticket, sessionId, worktreePath, launch, boardStatus };
 }
 
 export interface SessionRow {
@@ -140,7 +147,16 @@ export function listSessions(filter?: { ticketId?: string; status?: string }): S
   return db.prepare(sql).all(...params) as SessionRow[];
 }
 
-export function completeSession(sessionId: string, status: string, summary?: string): void {
+export interface CompleteSessionResult {
+  /** Result of moving the source ticket on its board, if a status name is configured for `status`. */
+  boardStatus?: BoardStatusResult;
+}
+
+export async function completeSession(
+  sessionId: string,
+  status: string,
+  summary?: string,
+): Promise<CompleteSessionResult> {
   releaseAllLocks(sessionId);
   getDb()
     .prepare(
@@ -154,7 +170,11 @@ export function completeSession(sessionId: string, status: string, summary?: str
     getDb()
       .prepare(`UPDATE tickets SET status = ?, updated_at = datetime('now') WHERE id = ?`)
       .run(status, row.ticketId);
+    if (isBoardLifecycle(status)) {
+      return { boardStatus: await syncBoardStatus(row.ticketId, status) };
+    }
   }
+  return {};
 }
 
 export interface CleanupOptions {
