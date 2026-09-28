@@ -1,5 +1,6 @@
 import type { NormalizedTicket, TicketSource } from "../types.js";
 import { parseWantedLines } from "./util.js";
+import { getCredential } from "../credentials.js";
 
 export interface LinearSourceOptions {
   /** Defaults to process.env.LINEAR_API_KEY. Personal API keys go directly
@@ -50,7 +51,7 @@ const QUERY = /* GraphQL */ `
  * identifiers/titles in the input text to bypass filtering entirely.
  */
 export function linearTicketSource(opts: LinearSourceOptions): TicketSource {
-  const apiKey = opts.apiKey ?? process.env.LINEAR_API_KEY;
+  const apiKey = opts.apiKey ?? getCredential("LINEAR_API_KEY");
   const apiUrl = opts.apiUrl ?? "https://api.linear.app/graphql";
 
   return {
@@ -110,6 +111,7 @@ export function linearTicketSource(opts: LinearSourceOptions): TicketSource {
           body: issue.description ?? undefined,
           repoId: opts.defaultRepoId,
           repoPath: opts.defaultRepoPath,
+          boardTarget: { source: "linear", ...(opts.apiUrl ? { apiUrl: opts.apiUrl } : {}) },
         });
       }
       return tickets;

@@ -1,5 +1,6 @@
 import type { NormalizedTicket, TicketSource } from "../types.js";
 import { parseWantedLines } from "./util.js";
+import { getCredential } from "../credentials.js";
 
 export interface NotionSourceOptions {
   /** Defaults to process.env.NOTION_API_KEY. */
@@ -73,7 +74,7 @@ const MAX_PAGES = 5; // safety cap: 5 * 100 = 500 results per resolve() call
  * the input, or passing `onlyAssignedToMe: false`, overrides this.
  */
 export function notionTicketSource(opts: NotionSourceOptions): TicketSource {
-  const apiKey = opts.apiKey ?? process.env.NOTION_API_KEY;
+  const apiKey = opts.apiKey ?? getCredential("NOTION_API_KEY");
   const baseUrl = opts.apiBaseUrl ?? "https://api.notion.com";
   const props = {
     title: opts.properties?.title ?? "Name",
@@ -185,6 +186,12 @@ export function notionTicketSource(opts: NotionSourceOptions): TicketSource {
           body,
           repoId,
           repoPath: repoId === opts.defaultRepoId ? opts.defaultRepoPath : repoId,
+          boardTarget: {
+            source: "notion",
+            databaseId: opts.databaseId,
+            statusProperty: props.status,
+            ...(opts.apiBaseUrl ? { apiBaseUrl: opts.apiBaseUrl } : {}),
+          },
         });
       }
       return tickets;
