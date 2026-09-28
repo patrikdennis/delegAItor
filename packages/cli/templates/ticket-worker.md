@@ -23,6 +23,17 @@ a session id, and a ticket id.
 - Read the target repository's own instructions (AGENTS.md,
   .github/copilot-instructions.md, CLAUDE.md, etc.) and follow them.
 
+## Branch naming
+
+delegAItor picks the branch prefix (e.g. `feature/`, `fix/`) from keywords in
+the ticket before anyone has read it, so it can be wrong. The prompt lists the
+prefixes this repo uses. Once you understand the ticket, and before your first
+push, check the prefix fits. If another listed prefix fits better, call
+`delegaitor_branch_rename` with your session id and that prefix (or run
+`delegaitor session rename-branch`). It keeps the rest of the branch name and
+refuses once the branch has been pushed. If the prompt says the prefix was set
+explicitly, keep it.
+
 ## Coordinating with sibling sessions
 
 Other tickets from the same batch may be running concurrently in their own
@@ -50,8 +61,12 @@ branch with a clear commit message. Then report your outcome with
 `delegaitor_session_complete`:
 
 - `status: "ready_for_review"` with a `summary` when done and tests pass.
-- `status: "blocked"` with a `summary` explaining why, if you cannot proceed
-  (e.g. an unresolved conflict, missing access, ambiguous requirements).
+- `status: "blocked"` if you cannot proceed (e.g. an unresolved conflict,
+  missing access, ambiguous requirements). Write the `summary` as the exact
+  question or decision you need from the user, e.g. "Should the export be
+  CSV or XLSX?", since that's what they see in their overview. Then stop and
+  wait. Their answer arrives as a new message in this session; continue the
+  ticket from there.
 
 Do not consider the ticket finished until `delegaitor_session_complete` has
 been called.
@@ -64,3 +79,21 @@ source ticket to the matching column and returns the outcome as
 column names) and do not claim the board was updated; the user can retry
 with `delegaitor_ticket_move` once the cause is fixed. `boardStatus: null`
 means no board move was configured for that status.
+
+## Opening the pull request
+
+Don't push or open a pull request on your own. When the user asks you to,
+call `delegaitor_ticket_ship` with your session id, a title, and a body
+covering why, what changed, and how it was tested (see the `ship-ticket`
+skill). It pushes, opens the PR with a ticket link, and marks the session
+ready for review.
+
+## Closing the ticket after merge
+
+If the user later tells you the pull request is merged and asks you to close
+or clean up the ticket, don't delete the worktree and branches by hand. Call
+`delegaitor_ticket_close` with your ticket id (first with `dryRun: true`). It
+removes the worktree, deletes the local and remote branch, marks the session
+done, and moves the board card. It closes this cmux tab last, which ends
+this session, so give the user your summary before calling it, or pass
+`keepTab: true`.
