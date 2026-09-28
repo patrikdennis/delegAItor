@@ -267,7 +267,7 @@ server.registerTool(
         "fields change; otherwise the profile is replaced. repoPath should be an absolute path to the local clone. " +
         "Check the options with delegaitor_plan first so the saved profile is known to resolve the right tickets.",
     inputSchema: {
-      name: z.string().describe('Profile name, e.g. "sales-engine"'),
+      name: z.string().describe('Profile name, e.g. "my-board"'),
       description: z.string().optional().describe("What the profile is for"),
       merge: z.boolean().optional(),
       ...profileFields,

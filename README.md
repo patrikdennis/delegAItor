@@ -25,7 +25,7 @@ What it does for you:
 - **Coordinates sibling sessions** with locks and messages so two agents
   don't race the same file ([Coordination protocol](#coordination-protocol)).
 - **Remembers your setup** in named profiles, so dispatching is
-  `delegaitor dispatch --profile sales-engine` ([Profiles](#profiles)).
+  `delegaitor dispatch --profile my-board` ([Profiles](#profiles)).
 - **Ships, reviews and unblocks**: opens the PR with a ticket link, reviews
   the diff against the ticket, and relays your answers to blocked agents
   ([After dispatch](#after-dispatch-ship-review-unblock)).
@@ -43,14 +43,14 @@ started, see [cmux integration](#cmux-integration)):
 ```bash
 # 0. Once: save your board, filters, repo and columns as a profile
 #    (run from the repo's clone so its path is saved too):
-delegaitor profile save sales-engine --description "Sales Engine rollout board" \
+delegaitor profile save my-board --description "My team board" \
   --notion-db <database-id> --notion-title-prop "Task" --notion-status "Not started" \
   --repo owner/repo --agent copilot \
   --move-on-dispatch "In progress" --move-on-review "Ready for review" --move-on-done "Done"
 
 # 1. Preview, then dispatch: one worktree, branch and cmux tab per ticket.
-delegaitor plan --profile sales-engine
-delegaitor dispatch --profile sales-engine
+delegaitor plan --profile my-board
+delegaitor dispatch --profile my-board
 
 # 2. See what needs you: blocked agents, work to ship, PRs to review or close.
 delegaitor overview
@@ -62,13 +62,17 @@ delegaitor ticket context <ticket>                                       # ticke
 delegaitor ticket close <ticket>                                         # after merge
 ```
 
-Or, in any Copilot/Claude session, just say it: "delegate my Sales Engine
-tickets", "what are my agents doing?", "unblock them", "ship this",
-"review ticket 3e2e…", "close it". The [skills](#installing-the-skills)
+Or, in any Copilot/Claude session, just say it: "delegate my
+board tickets", "what are my agents doing?", "unblock them", "ship this",
+"review ticket 1a2b…", "close it". The [skills](#installing-the-skills)
 turn those into the commands above.
 
 Anywhere a command takes `<ticket>`, you can pass a ticket id, a session id,
-or the branch name.
+the branch name, or the first 6+ characters of a session or ticket id
+(e.g. `274e2f8c`).
+
+For the full day-to-day loop, including switching boards and what to do
+when something goes wrong, see [docs/WORKFLOW.md](docs/WORKFLOW.md).
 
 ## Architecture
 
@@ -166,8 +170,8 @@ done
 | `ticket-status` | "what are my agents doing?", "standup summary" | Groups open tickets by what they need from you, from `delegaitor_overview`. |
 | `unblock` | "unblock my agents", "what are they waiting for?" | Reads each blocked agent's question and screen, asks you everything in one go, and types your answers into their tabs. |
 | `ship-ticket` | "ship it", "open a PR for this" | Checks the work is committed, writes a PR title and description from the diff and ticket, and runs `delegaitor_ticket_ship` after you approve. |
-| `review-ticket` | "review ticket 3e2e…", "is this ready to merge?" | Checks the diff against every requirement in the ticket and its discussion, lists findings, and can send them to the agent to fix. |
-| `close-ticket` | "close ticket 3e2e988f…", "this PR is merged, clean it up" | Previews, then runs `delegaitor_ticket_close` (see [Closing a ticket](#closing-a-ticket)). Refuses unmerged work unless you explicitly say to discard it. |
+| `review-ticket` | "review ticket 1a2b…", "is this ready to merge?" | Checks the diff against every requirement in the ticket and its discussion, lists findings, and can send them to the agent to fix. |
+| `close-ticket` | "close ticket 1a2b3c4d…", "this PR is merged, clean it up" | Previews, then runs `delegaitor_ticket_close` (see [Closing a ticket](#closing-a-ticket)). Refuses unmerged work unless you explicitly say to discard it. |
 
 Restart open sessions to pick up new skills. The skills call the MCP tools
 rather than the shell, so they work even when shell commands aren't
@@ -182,9 +186,9 @@ agent and `--move-on-*` columns. Save one with the same flags you'd pass to
 
 ```bash
 cd ~/work/my-repo     # a repo without --repo-path gets the current directory
-delegaitor profile save sales-engine --description "Sales Engine rollout board" \
+delegaitor profile save my-board --description "My team board" \
   --notion-db <database-id> --notion-title-prop "Task" \
-  --notion-project-prop "Product Rollup" --notion-project "Sales Engine — …" \
+  --notion-project-prop "Project Rollup" --notion-project "Q3 launch" \
   --notion-status "Not started" --repo owner/repo --agent copilot \
   --move-on-dispatch "In progress" --move-on-review "Ready for review" --move-on-done "Done"
 ```
@@ -192,8 +196,8 @@ delegaitor profile save sales-engine --description "Sales Engine rollout board" 
 Then use it from anywhere, overriding any field with a flag:
 
 ```bash
-delegaitor dispatch --profile sales-engine
-delegaitor plan --profile sales-engine --notion-status "Backlog"
+delegaitor dispatch --profile my-board
+delegaitor plan --profile my-board --notion-status "Backlog"
 ```
 
 - `profile save <name> --merge <flags>` changes only the given fields.
@@ -257,8 +261,8 @@ To skip classification and force one prefix on every branch, pass
 ## CLI usage
 
 Each ticket gets a branch named `<prefix><ticket-id>-<title-slug>`, e.g.
-`fix/3e2e988f-...-sortering-foljer-med-soket`. Accented letters in titles are
-transliterated (följer → foljer) so branch names stay plain ASCII. See
+`fix/1a2b3c4d-...-sokning-visar-fel-resultat`. Accented letters in titles are
+transliterated (sökning → sokning) so branch names stay plain ASCII. See
 [Branch prefixes](#branch-prefixes) for how the prefix is chosen.
 
 ```bash
@@ -687,8 +691,8 @@ This token is scoped to you personally (like a PAT), so the default
    one for exactly this reason, or add one: new rollup property → relate
    to your Project relation → show its title):
    ```bash
-   delegaitor plan --notion-db <database-id> --notion-project-prop "Product Rollup" \
-     --notion-project "Sales Engine — Förberedelser för utrullning till fler återförsäljare" \
+   delegaitor plan --notion-db <database-id> --notion-project-prop "Project Rollup" \
+     --notion-project "Q3 launch" \
      --repo owner/repo
    ```
    Every workspace organizes projects differently, so check your

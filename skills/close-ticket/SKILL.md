@@ -14,7 +14,7 @@ safe to re-run: steps already done by hand are reported as "already gone".
 
 In order of preference:
 
-1. An id the user gave (ticket id like `3e2e988f-…`, or a session id).
+1. An id the user gave (ticket id like `1a2b3c4d-…`, or a session id).
 2. The current worktree: if the cwd is under `~/.delegaitor/worktrees/<repo>/<ticket-id>`,
    the last path segment is the ticket id.
 3. A branch name: pass it as `ref` directly. For a PR number, call

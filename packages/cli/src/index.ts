@@ -154,7 +154,7 @@ program
 
 const profileCmd = program
   .command("profile")
-  .description("Saved plan/dispatch options, so you can run e.g. `delegaitor dispatch --profile sales-engine`");
+  .description("Saved plan/dispatch options, so you can run e.g. `delegaitor dispatch --profile my-board`");
 addPlanOptions(
   profileCmd
     .command("save")

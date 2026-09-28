@@ -6,7 +6,7 @@ import type { AgentRuntimeKind } from "./types.js";
 import type { ResolveExecutionPlanOptions } from "./resolve.js";
 
 /**
- * A saved set of plan/dispatch options, so "delegate my Sales Engine
+ * A saved set of plan/dispatch options, so "delegate my board
  * tickets" doesn't need a dozen flags. Field names match the MCP tool
  * inputs. Everything is optional: whatever is set on the command line or
  * in the tool call overrides the profile.
