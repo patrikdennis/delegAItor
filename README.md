@@ -1,14 +1,74 @@
 # delegAItor
 
-Delegates multiple tickets — from GitHub Issues, plain markdown lists, or a
-Notion database — into isolated git worktrees/branches, each with its own
-agent session (Claude, Copilot, Codex, or OpenCode), and keeps those
+Delegates multiple tickets — from GitHub Issues, plain markdown lists,
+Notion, Linear or Jira — into isolated git worktrees/branches, each with its
+own agent session (Claude, Copilot, Codex, or OpenCode), and keeps those
 sessions in sync via a shared SQLite-backed lock + messaging registry.
 
 One prompt in → a plan showing branches, worktrees, and flagged conflicts →
 confirm → one cmux workspace (or detached process) per ticket, each running
 a `ticket-worker` agent that reports status and coordinates with siblings
 before completing.
+
+What it does for you:
+
+- **Pulls tickets** from your board, scoped to what's assigned to you, a
+  status column, and a project ([Ticket sources](#ticket-sources)).
+- **Names branches** the way your team does: `fix/`, `feature/` etc. picked
+  per ticket from the repo's own conventions or a rules file, with Swedish
+  and other accented letters transliterated ([Branch prefixes](#branch-prefixes)).
+- **Opens one cmux tab per ticket** with an agent already working in its own
+  worktree ([cmux integration](#cmux-integration)).
+- **Moves the board card** through your columns as the work progresses, e.g.
+  Not started → In progress → Ready for review → Done
+  ([Moving tickets across the board](#moving-tickets-across-the-board)).
+- **Coordinates sibling sessions** with locks and messages so two agents
+  don't race the same file ([Coordination protocol](#coordination-protocol)).
+- **Remembers your setup** in named profiles, so dispatching is
+  `delegaitor dispatch --profile sales-engine` ([Profiles](#profiles)).
+- **Ships, reviews and unblocks**: opens the PR with a ticket link, reviews
+  the diff against the ticket, and relays your answers to blocked agents
+  ([After dispatch](#after-dispatch-ship-review-unblock)).
+- **Closes finished tickets** in one step: worktree, local and remote branch,
+  session, board card and tab ([Closing a ticket](#closing-a-ticket)).
+- **Skills for Copilot and Claude** wrap all of this, so you can just say
+  "delegate my tickets" or "what are my agents doing?"
+  ([Installing the skills](#installing-the-skills)).
+
+## Typical workflow
+
+Run these from a **cmux tab** (cmux only accepts commands from processes it
+started, see [cmux integration](#cmux-integration)):
+
+```bash
+# 0. Once: save your board, filters, repo and columns as a profile
+#    (run from the repo's clone so its path is saved too):
+delegaitor profile save sales-engine --description "Sales Engine rollout board" \
+  --notion-db <database-id> --notion-title-prop "Task" --notion-status "Not started" \
+  --repo owner/repo --agent copilot \
+  --move-on-dispatch "In progress" --move-on-review "Ready for review" --move-on-done "Done"
+
+# 1. Preview, then dispatch: one worktree, branch and cmux tab per ticket.
+delegaitor plan --profile sales-engine
+delegaitor dispatch --profile sales-engine
+
+# 2. See what needs you: blocked agents, work to ship, PRs to review or close.
+delegaitor overview
+
+# 3. Per ticket, as it progresses:
+delegaitor session nudge <ticket> "Use CSV, like the existing export"   # answer a blocked agent
+delegaitor ticket ship <ticket> --title "..." --body "..."              # push + open the PR
+delegaitor ticket context <ticket>                                       # ticket + diff, to review
+delegaitor ticket close <ticket>                                         # after merge
+```
+
+Or, in any Copilot/Claude session, just say it: "delegate my Sales Engine
+tickets", "what are my agents doing?", "unblock them", "ship this",
+"review ticket 3e2e…", "close it". The [skills](#installing-the-skills)
+turn those into the commands above.
+
+Anywhere a command takes `<ticket>`, you can pass a ticket id, a session id,
+or the branch name.
 
 ## Architecture
 
@@ -20,6 +80,7 @@ packages/
   cli/          `delegaitor` binary — thin wrapper over @delegaitor/core.
   mcp-server/   `delegaitor-mcp` — exposes the same operations as MCP tools
                 so Claude/Copilot can call them natively in-session.
+skills/         Copilot/Claude skills built on the MCP tools (e.g. close-ticket).
 ```
 
 All state (SQLite DB, worktrees, prompt files) lives under
@@ -86,7 +147,119 @@ mkdir -p ~/.copilot/agents
 cp packages/cli/templates/ticket-worker.md ~/.copilot/agents/ticket-worker.md
 ```
 
+### Installing the skills
+
+Skills live in `skills/` and work in both Copilot CLI and Claude Code.
+Symlink them so they stay up to date with the repo:
+
+```bash
+mkdir -p ~/.copilot/skills ~/.claude/skills
+for s in skills/*/; do
+  ln -sfn "$PWD/$s" ~/.copilot/skills/"$(basename "$s")"
+  ln -sfn "$PWD/$s" ~/.claude/skills/"$(basename "$s")"
+done
+```
+
+| Skill | Use it by saying… | What it does |
+|-------|-------------------|--------------|
+| `delegate` | "delegate my Not started tickets", "dispatch these: …" | Picks or creates a [profile](#profiles), previews the plan, and dispatches after you confirm. |
+| `ticket-status` | "what are my agents doing?", "standup summary" | Groups open tickets by what they need from you, from `delegaitor_overview`. |
+| `unblock` | "unblock my agents", "what are they waiting for?" | Reads each blocked agent's question and screen, asks you everything in one go, and types your answers into their tabs. |
+| `ship-ticket` | "ship it", "open a PR for this" | Checks the work is committed, writes a PR title and description from the diff and ticket, and runs `delegaitor_ticket_ship` after you approve. |
+| `review-ticket` | "review ticket 3e2e…", "is this ready to merge?" | Checks the diff against every requirement in the ticket and its discussion, lists findings, and can send them to the agent to fix. |
+| `close-ticket` | "close ticket 3e2e988f…", "this PR is merged, clean it up" | Previews, then runs `delegaitor_ticket_close` (see [Closing a ticket](#closing-a-ticket)). Refuses unmerged work unless you explicitly say to discard it. |
+
+Restart open sessions to pick up new skills. The skills call the MCP tools
+rather than the shell, so they work even when shell commands aren't
+approved in that session. `unblock` and `delegate` need the session to run
+inside cmux, since they type into or open cmux tabs.
+
+## Profiles
+
+A profile is a saved set of `plan`/`dispatch` flags: board, filters, repo,
+agent and `--move-on-*` columns. Save one with the same flags you'd pass to
+`dispatch`:
+
+```bash
+cd ~/work/my-repo     # a repo without --repo-path gets the current directory
+delegaitor profile save sales-engine --description "Sales Engine rollout board" \
+  --notion-db <database-id> --notion-title-prop "Task" \
+  --notion-project-prop "Product Rollup" --notion-project "Sales Engine — …" \
+  --notion-status "Not started" --repo owner/repo --agent copilot \
+  --move-on-dispatch "In progress" --move-on-review "Ready for review" --move-on-done "Done"
+```
+
+Then use it from anywhere, overriding any field with a flag:
+
+```bash
+delegaitor dispatch --profile sales-engine
+delegaitor plan --profile sales-engine --notion-status "Backlog"
+```
+
+- `profile save <name> --merge <flags>` changes only the given fields.
+- `profile list`, `profile show <name>`, `profile remove <name>`.
+- Profiles are stored in `$DELEGAITOR_HOME/profiles.json`, one JSON object
+  per name with the same field names as the MCP tool inputs.
+- MCP: pass `profile` to `delegaitor_plan`/`delegaitor_dispatch`; manage them
+  with `delegaitor_profile_list`, `delegaitor_profile_save`,
+  `delegaitor_profile_remove`.
+
+## Branch prefixes
+
+delegAItor picks a prefix per ticket by matching keywords (English and
+Swedish) in the title and body. A title match counts more than a body match,
+and a ticket that matches nothing gets the default prefix. `plan` shows the
+chosen prefix and why:
+
+```
+  prefix=fix/  (matched "inga träffar")
+```
+
+The allowed prefixes come from the first of these that exists:
+
+1. The file passed with `--branch-rules <file>` (MCP: `branchRules`).
+2. `<repo>/.delegaitor/branch-prefixes.json`, which you can commit to share it with your team.
+3. `~/.delegaitor/branch-prefixes.json`, for your own default.
+4. The prefixes the repo already uses on its remote branches (e.g. `feature/`,
+   `fix/`, `security/`). Bot prefixes like `dependabot/` are ignored.
+5. A built-in list of conventional prefixes (`feature/`, `fix/`, `hotfix/`,
+   `security/`, `perf/`, `refactor/`, `docs/`, `test/`, `chore/`, `ci/`).
+
+A rules file looks like this:
+
+```json
+{
+  "default": "feature/",
+  "prefixes": [
+    { "prefix": "feature/", "description": "New functionality" },
+    { "prefix": "bugfix/", "description": "Bug fixes", "keywords": ["bug", "fel", "krasch"] },
+    { "prefix": "docs/" }
+  ]
+}
+```
+
+`keywords` and `description` are optional for well-known prefixes and fall
+back to the built-in ones, so `docs/` above gets the built-in docs keywords.
+Keywords you list replace the built-in ones. `default` must be one of the
+listed prefixes.
+
+Keywords are only a first guess. The ticket prompt lists the allowed prefixes,
+and the agent can switch to a better one once it has read the ticket, as long
+as the branch hasn't been pushed yet:
+
+```bash
+delegaitor session rename-branch --session <id> --prefix fix/   # MCP: delegaitor_branch_rename
+```
+
+To skip classification and force one prefix on every branch, pass
+`--branch-prefix "fix/"` (or `""` for none). The agent is then told to keep it.
+
 ## CLI usage
+
+Each ticket gets a branch named `<prefix><ticket-id>-<title-slug>`, e.g.
+`fix/3e2e988f-...-sortering-foljer-med-soket`. Accented letters in titles are
+transliterated (följer → foljer) so branch names stay plain ASCII. See
+[Branch prefixes](#branch-prefixes) for how the prefix is chosen.
 
 ```bash
 # Preview only — no worktrees/agents created:
@@ -123,8 +296,7 @@ Multi-line ticket text must go via stdin (heredoc) or `--file`; a leading
 Listing an explicit ticket title/id/URL in the input text always overrides
 the mine/all filtering on shared boards, regardless of `--all`.
 
-Status, locks, and messaging (also exposed as MCP tools of the same name
-with a `delegaitor_` prefix):
+Status, locks, messaging and ticket lifecycle:
 
 ```bash
 delegaitor status
@@ -133,11 +305,114 @@ delegaitor lock release --session <id> --resource <path>
 delegaitor message send --session <id> --to-ticket <id> --kind conflict --body "..."
 delegaitor message inbox --ticket <id>
 delegaitor session complete --session <id> --status ready_for_review --summary "..."
+delegaitor session rename-branch --session <id> --prefix fix/
+delegaitor session screen <ticket> [--lines 80]
+delegaitor session nudge <ticket> "<reply>"
+delegaitor overview [--all] [--no-prs] [--json]
+delegaitor ticket ship <ticket> [--title ...] [--body ...] [--draft] [--dry-run]
+delegaitor ticket context <ticket> [--no-diff] [--json]
+delegaitor ticket move --ticket <id> --stage ready_for_review
+delegaitor ticket close <ticket> [--dry-run]
+delegaitor profile save|list|show|remove
+delegaitor auth set|remove|list [NAME]
 ```
+
+The same operations are available as MCP tools, so agents can call them
+without shell access:
+
+| MCP tool | CLI equivalent |
+|----------|----------------|
+| `delegaitor_plan`, `delegaitor_dispatch` | `plan`, `dispatch` |
+| `delegaitor_profile_list`, `delegaitor_profile_save`, `delegaitor_profile_remove` | `profile list/save/remove` |
+| `delegaitor_status` | `status` |
+| `delegaitor_overview` | `overview` |
+| `delegaitor_lock_acquire`, `delegaitor_lock_release`, `delegaitor_lock_list` | `lock acquire/release/list` |
+| `delegaitor_message_send`, `delegaitor_message_inbox` | `message send/inbox` |
+| `delegaitor_session_complete` | `session complete` |
+| `delegaitor_branch_rename` | `session rename-branch` |
+| `delegaitor_session_screen`, `delegaitor_session_nudge` | `session screen`, `session nudge` |
+| `delegaitor_ticket_ship` | `ticket ship` |
+| `delegaitor_ticket_context` | `ticket context` |
+| `delegaitor_ticket_move` | `ticket move` |
+| `delegaitor_ticket_close` | `ticket close` |
+| `delegaitor_session_cleanup`, `delegaitor_cleanup` | `session cleanup`, `cleanup` |
+
+## After dispatch: ship, review, unblock
+
+**What needs you.** `delegaitor overview` lists every open ticket with what
+it needs next:
+
+| `next` | Meaning |
+|--------|---------|
+| `unblock` | The agent reported `blocked`; its summary is its question. |
+| `address review` | The PR has requested changes. |
+| `ship` | The agent is done but there's no PR yet. |
+| `review` | A PR is open. |
+| `close` | The PR is merged. |
+| `working` / `check` | Still working / the session failed. |
+
+PR state comes from `gh`; pass `--no-prs` to skip it.
+
+**Answering a blocked agent.** `delegaitor session screen <ticket>` shows
+the end of the agent's tab. `delegaitor session nudge <ticket> "<reply>"`
+types your reply into it and presses Enter, as if you had switched tabs and
+answered. It also marks the session running again, moves the card back to
+the in-progress column, and saves the reply as a message on the ticket.
+Both need cmux, and a session launched as a detached process can't be
+nudged.
+
+**Shipping.** `delegaitor ticket ship <ticket> --title "..." --body "..."`
+pushes the branch (never with force), opens a PR against the base branch
+with a link to the ticket appended, and marks the session
+`ready_for_review` so the card moves. If a PR is already open it's reused.
+It refuses with uncommitted changes or no new commits, and warns when the
+branch doesn't use one of the repo's prefixes. Agents only ship when you
+ask them to.
+
+**Reviewing.** `delegaitor ticket context <ticket>` prints the ticket text
+(including the discussion fetched from the board), the agent's summary, the
+PR, commits, and the diff against the base branch. The `review-ticket` skill
+uses it to check the work against each requirement.
+
+## Closing a ticket
+
+Once a ticket's pull request is merged, one command tidies up everything
+dispatch created:
+
+```bash
+delegaitor ticket close <ticket-or-session-id> --dry-run   # preview
+delegaitor ticket close <ticket-or-session-id>
+```
+
+In order, it:
+
+1. Removes the worktree.
+2. Deletes the local branch, including when the agent renamed it.
+3. Deletes the remote branch, including when it was pushed under another
+   name (`git push origin HEAD:fix/other-name`), found through the branch's
+   upstream.
+4. Marks the session `done`, which moves the board card to your
+   `--move-on-done` column if you gave one at dispatch.
+5. Closes the ticket's cmux tab. This comes last because it ends the agent
+   running in that tab.
+
+It refuses, unless you pass `--force`, when work could be lost: the pull
+request is still open, the branch has commits that aren't on the base
+branch and no merged pull request was found, or the worktree has
+uncommitted changes. Squash and rebase merges are recognized through the
+GitHub pull request (needs `gh`).
+
+Steps you've already done by hand show as `already gone`, so it's safe to
+run after a partial manual cleanup. Other options: `--keep-remote`,
+`--keep-tab`, `--summary "..."`. Agents use the `delegaitor_ticket_close`
+MCP tool, or the [`close-ticket` skill](#installing-the-skills).
 
 ## Cleanup
 
-Nothing destructive happens by default. Cleanup is opt-in and gated:
+For a single merged ticket, [`ticket close`](#closing-a-ticket) is simpler.
+The commands below are for bulk or low-level cleanup, e.g. abandoned or
+cancelled sessions. Nothing destructive happens by default. Cleanup is
+opt-in and gated:
 
 ```bash
 # Preview what a full cleanup pass would do, with the recommended safe modes:
@@ -158,21 +433,24 @@ delegaitor session cleanup --session <id> --remove-worktree force --delete-branc
 - `--delete-remote` also deletes the remote branch, subject to the same
   `--delete-branch` gate.
 - `--dry-run` reports what would happen without touching anything.
-- The batch `delegaitor cleanup` command finds every `completed`/`failed`/
-  `cancelled` session, closes its cmux workspace tab, and applies the same
+- The batch `delegaitor cleanup` command finds every `completed`/`done`/
+  `failed`/`cancelled` session, closes its cmux workspace tab, and applies the same
   gated worktree/branch cleanup to each.
 
 ## Coordination protocol
 
 Every dispatched ticket's prompt instructs the agent to:
 
-1. Call `lock acquire` before editing a resource another ticket in the same
+1. Check the branch prefix fits once it has read the ticket, and switch it
+   with `session rename-branch` before the first push if not.
+2. Call `lock acquire` before editing a resource another ticket in the same
    batch might also touch (flagged in the plan's `conflictsWith`).
-2. If held by another session, send a `conflict` message to that ticket and
+3. If held by another session, send a `conflict` message to that ticket and
    poll `message inbox` instead of racing the edit.
-3. Release the lock when done with that resource.
-4. Report `session complete` with `ready_for_review` or `blocked` when
-   finished, which also releases any locks it still holds.
+4. Release the lock when done with that resource.
+5. Report `session complete` with `ready_for_review` or `blocked` when
+   finished, which also releases any locks it still holds and moves the
+   board card if configured.
 
 Locks are advisory — they coordinate cooperating agents, not a hard
 filesystem-level guarantee.
@@ -187,18 +465,24 @@ detached background process.
 **Setup** (only needed once):
 
 1. Make sure the `cmux` CLI is installed and on `PATH` — check with
-   `cmux --version`. If it's missing, install/build cmux per its own
-   project instructions; delegAItor doesn't bundle or install it.
-2. A global cmux action is installed at `~/.config/cmux/cmux.json`
+   `cmux --version`. The macOS app ships it at
+   `/Applications/cmux.app/Contents/Resources/bin/cmux`; add that folder to
+   `PATH` if needed. delegAItor doesn't bundle or install it.
+2. **Run `dispatch` from inside a cmux tab.** cmux only accepts commands
+   from processes it started; from any other terminal `cmux ping` fails
+   with "Access denied — only processes started inside cmux can connect",
+   and dispatch falls back to detached background processes (the output
+   says `detached-terminal` instead of a cmux workspace).
+3. A global cmux action is installed at `~/.config/cmux/cmux.json`
    (`delegaitor.dispatch` / `delegaitor.status`, also surfaced in the tab
    bar). If that file doesn't already exist or was created before you set
    up delegAItor, copy/merge the `delegaitor.*` action entries from this
    repo's own `~/.config/cmux/cmux.json` example, or add them manually —
    see cmux's config docs for the action schema.
-3. Reload cmux's config to pick up the change: `Cmd+Shift+,`, or fully
+4. Reload cmux's config to pick up the change: `Cmd+Shift+,`, or fully
    restart cmux — there is no `cmux reload-config` command in current
    builds.
-4. Verify: run `delegaitor dispatch ...` from a terminal and confirm a new
+5. Verify: run `delegaitor dispatch ...` from a cmux tab and confirm a new
    cmux tab/workspace opens per ticket, titled with the ticket name.
 
 Without cmux at all, everything still works — dispatched sessions just run
@@ -618,3 +902,11 @@ moves.
   behavior) but have not been exercised against real Linear/Jira accounts.
   Run `delegaitor plan` first to sanity-check output before `dispatch`.
   The same applies to their board moves (`--move-on-*`).
+- Branch prefix classification is keyword-based, so it's a first guess;
+  the agent is asked to check it and rename before pushing.
+- `session nudge` sends text as one line: newlines become spaces, and the
+  backslash in a literal `\n`, `\r` or `\t` is replaced with `∖`, because
+  cmux would otherwise send those as key presses.
+- `ticket close` recognizes squash/rebase merges only through a GitHub pull
+  request found with `gh`. For other hosts, a squash-merged branch looks
+  unmerged, so pass `--force` once you've confirmed it landed.
