@@ -914,3 +914,7 @@ moves.
 - `ticket close` recognizes squash/rebase merges only through a GitHub pull
   request found with `gh`. For other hosts, a squash-merged branch looks
   unmerged, so pass `--force` once you've confirmed it landed.
+
+## License
+
+[MIT](LICENSE). Provided "as is", without warranty.

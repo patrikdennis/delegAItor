@@ -1,6 +1,7 @@
 {
   "name": "@delegaitor/mcp-server",
   "version": "0.1.0",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "delegaitor-mcp": "./dist/index.js"
