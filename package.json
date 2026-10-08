@@ -2,6 +2,7 @@
   "name": "delegaitor",
   "private": true,
   "version": "0.1.0",
+  "license": "MIT",
   "description": "Delegates tickets to isolated git worktrees/branches and agent sessions (Claude, Copilot, etc.), keeping them in sync via a shared resource-lock and messaging registry.",
   "workspaces": [
     "packages/*"
