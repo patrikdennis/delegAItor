@@ -6,8 +6,14 @@ import type { PlannedTicket } from "../types.js";
 export const DEFAULT_BRANCH_PREFIX = "feature/";
 
 export function branchName(ticketId: string, title: string, prefix: string = DEFAULT_BRANCH_PREFIX): string {
-  const slug = sanitize(transliterate(title).toLowerCase()).slice(0, 40).replace(/-+$/g, "");
-  return `${prefix}${sanitize(ticketId)}-${slug}`;
+  // Only [a-z0-9-]: dots, spaces and punctuation from titles would give names git rejects (e.g. a trailing ".").
+  const slug = transliterate(title)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+/, "")
+    .slice(0, 40)
+    .replace(/-+$/, "");
+  return slug ? `${prefix}${sanitize(ticketId)}-${slug}` : `${prefix}${sanitize(ticketId)}`;
 }
 
 // Letters that Unicode normalization doesn't decompose into base + accent.
