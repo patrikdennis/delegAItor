@@ -6,7 +6,7 @@ import { promptsDir } from "./paths.js";
 import type { BranchNaming, ExecutionPlan, PlannedTicket } from "./types.js";
 import { createWorktree, removeWorktree, isWorktreeClean, isBranchMerged, deleteLocalBranch, remoteBranchExists, deleteRemoteBranch } from "./worktree/git.js";
 import { buildAgentCommand } from "./agents/runtimes.js";
-import { launchSession, closeCmuxWorkspace, notifyCmux } from "./agents/launch.js";
+import { launchSession, closeCmuxWorkspace, notifyCmux, workspaceTitle } from "./agents/launch.js";
 import { buildTicketPrompt } from "./agents/prompt.js";
 import { execa } from "execa";
 import { releaseAllLocks } from "./sync/locks.js";
@@ -92,7 +92,7 @@ export async function dispatchTicket(plan: ExecutionPlan, ticket: PlannedTicket)
   const cmd = buildAgentCommand(ticket.agent, promptFile);
   const launch = await launchSession(cmd, {
     worktreePath,
-    title: `${ticket.id}: ${ticket.title}`,
+    title: workspaceTitle(ticket.title, ticket.id),
   });
 
   getDb()
