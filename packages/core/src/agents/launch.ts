@@ -6,6 +6,15 @@ export interface LaunchTarget {
   title: string;
 }
 
+const MAX_WORKSPACE_TITLE = 60;
+
+/** The cmux tab name: the ticket title on one line, shortened to fit the sidebar; the id only if there's no title. */
+export function workspaceTitle(title: string, fallback: string): string {
+  const oneLine = title.replace(/\s+/g, " ").trim();
+  if (!oneLine) return fallback;
+  return oneLine.length > MAX_WORKSPACE_TITLE ? `${oneLine.slice(0, MAX_WORKSPACE_TITLE - 1).trimEnd()}…` : oneLine;
+}
+
 export interface LaunchResult {
   method: "cmux" | "detached-terminal";
   cmuxWorkspaceId?: string;
