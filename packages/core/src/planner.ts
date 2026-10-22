@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentRuntimeKind, ExecutionPlan, NormalizedTicket, PlannedTicket } from "./types.js";
 import { branchName, detectLikelyConflicts } from "./worktree/git.js";
-import { repoWorktreesDir, sanitize } from "./paths.js";
+import { repoWorktreesDir, sanitize, ticketWorkspaceDir } from "./paths.js";
 import { join } from "node:path";
 import { classifyBranchPrefix, type BranchPrefixRules } from "./worktree/branch-prefix.js";
 
@@ -27,6 +27,7 @@ export function buildPlan(tickets: NormalizedTicket[], opts: PlanOptions): Execu
 
   const planned: PlannedTicket[] = tickets.map((t) => {
     const id = externalToId.get(t.externalId)!;
+    const unitId = t.unitId ?? id;
     const agent = opts.agentOverrides?.[t.externalId] ?? opts.defaultAgent;
     const rules = opts.branchRules?.get(t.repoPath);
     const options = rules?.prefixes.map((p) => ({ prefix: p.prefix, description: p.description })) ?? [];
@@ -36,11 +37,12 @@ export function buildPlan(tickets: NormalizedTicket[], opts: PlanOptions): Execu
         : rules
           ? { ...classifyBranchPrefix(t, rules), origin: rules.origin, options, locked: false }
           : undefined;
-    const branch = branchName(id, t.title, branchNaming?.prefix);
-    const worktreePath = join(repoWorktreesDir(t.repoId), sanitize(id));
+    const branch = branchName(id, t.title, branchNaming?.prefix, t.repoAlias);
+    const worktreePath = join(repoWorktreesDir(t.repoId), sanitize(unitId));
     return {
       ...t,
       id,
+      unitId,
       branch,
       worktreePath,
       agent,
@@ -51,10 +53,45 @@ export function buildPlan(tickets: NormalizedTicket[], opts: PlanOptions): Execu
     };
   });
 
+  const unitsByParent = new Map<string, PlannedTicket[]>();
+  for (const ticket of planned) {
+    const units = unitsByParent.get(ticket.id) ?? [];
+    units.push(ticket);
+    unitsByParent.set(ticket.id, units);
+  }
+
+  for (const units of unitsByParent.values()) {
+    if (units.length < 2) continue;
+    const coordinationUnits = units.map((unit) => ({
+      unitId: unit.unitId,
+      alias: unit.repoAlias ?? unit.repoId,
+      repoId: unit.repoId,
+      repoPath: unit.repoPath,
+      baseRef: unit.baseRef ?? "main",
+      branch: unit.branch,
+      worktreePath: unit.worktreePath,
+      branchNaming: unit.branchNaming,
+    }));
+    const workspacePath = ticketWorkspaceDir(units[0].id);
+    for (const unit of units) {
+      unit.coordinationUnits = coordinationUnits;
+      unit.workspacePath = workspacePath;
+    }
+  }
+
   const conflicts = detectLikelyConflicts(planned);
   for (const t of planned) {
-    t.conflictsWith = conflicts.get(t.id) ?? [];
+    t.conflictsWith = conflicts.get(t.unitId) ?? [];
   }
 
   return { runId, tickets: planned };
+}
+
+export function primaryTickets(plan: ExecutionPlan): PlannedTicket[] {
+  const seen = new Set<string>();
+  return plan.tickets.filter((ticket) => {
+    if (seen.has(ticket.id)) return false;
+    seen.add(ticket.id);
+    return true;
+  });
 }

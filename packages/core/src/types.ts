@@ -25,6 +25,10 @@ export interface NormalizedTicket {
   repoId: string;
   repoPath: string;
   baseRef?: string;
+  /** Local profile alias when this ticket was explicitly routed to a repo. */
+  repoAlias?: string;
+  /** Stable repo-specific unit id; the ticket id remains the shared parent id. */
+  unitId?: string;
   /** externalIds of other tickets in the same batch this one depends on. */
   dependsOn?: string[];
   /** Where to move this ticket on its board, for sources that support it. */
@@ -39,6 +43,7 @@ export interface TicketSource {
 
 export interface PlannedTicket extends NormalizedTicket {
   id: string;
+  unitId: string;
   branch: string;
   worktreePath: string;
   agent: AgentRuntimeKind;
@@ -47,6 +52,19 @@ export interface PlannedTicket extends NormalizedTicket {
   boardSync?: BoardSync;
   /** How the branch prefix was chosen, and which prefixes the agent may switch to. */
   branchNaming?: BranchNaming;
+  /** Other approved repo units for this parent ticket. */
+  coordinationUnits?: {
+    unitId: string;
+    alias: string;
+    repoId: string;
+    repoPath: string;
+    baseRef: string;
+    branch: string;
+    worktreePath: string;
+    branchNaming?: BranchNaming;
+  }[];
+  /** Shared container cwd for a catalog-scoped, multi-repository session. */
+  workspacePath?: string;
 }
 
 export interface BranchNaming {
@@ -59,7 +77,16 @@ export interface BranchNaming {
   locked: boolean;
 }
 
+export interface RepoCatalogEntry {
+  alias: string;
+  repoId: string;
+  repoPath: string;
+  base: string;
+}
+
 export interface ExecutionPlan {
   runId: string;
   tickets: PlannedTicket[];
+  /** Tickets whose catalog repo worktrees are prepared together in one session. */
+  multiRepoTicketIds?: string[];
 }

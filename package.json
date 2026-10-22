@@ -10,6 +10,7 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "typecheck": "tsc -b --pretty",
+    "test": "npm run build && node --test tests/*.test.mjs",
     "cli": "node --enable-source-maps packages/cli/dist/index.js",
     "dev:cli": "tsx packages/cli/src/index.ts",
     "dev:mcp": "tsx packages/mcp-server/src/index.ts",

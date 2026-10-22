@@ -5,6 +5,7 @@ import { z } from "zod";
 import {
   persistPlan,
   dispatchTicket,
+  markWorkUnitFailed,
   listSessions,
   completeSession,
   renameSessionBranch,
@@ -30,9 +31,11 @@ import {
   mergeProfile,
   cleanProfile,
   profileToResolveOptions,
+  primaryTickets,
   saveProfile,
   listProfiles,
   removeProfile,
+  repoIdForSession,
   type DispatchProfile,
   type ExecutionPlan,
 } from "@delegaitor/core";
@@ -59,6 +62,15 @@ const ticketSourceInputSchema = {
   agent: AgentEnum.optional().describe("Default agent runtime to assign to each ticket (default: claude)"),
   repo: z.string().optional().describe('Default repo as "owner/repo"'),
   repoPath: z.string().optional().describe("Local filesystem path of --repo; defaults to cwd"),
+  repositories: z
+    .array(z.object({
+      alias: z.string(),
+      repoId: z.string(),
+      repoPath: z.string(),
+      base: z.string(),
+    }))
+    .optional()
+    .describe("Allowed local repo catalog for each ticket. The agent receives isolated worktrees for every catalog repo in one session and decides which are affected."),
   base: z.string().optional().describe("Default base branch, defaults to main"),
   branchPrefix: z
     .string()
@@ -90,6 +102,7 @@ const ticketSourceInputSchema = {
       "Your Notion user id. Only needed for shared/workspace-owned Notion integration tokens, where " +
         "delegAItor can't auto-detect which teammate is running it.",
     ),
+  notionAssigneeProp: z.string().optional().describe('Notion people property containing assignees (default: "Assignee").'),
   notionStatuses: z
     .array(z.string())
     .optional()
@@ -179,6 +192,9 @@ function planArgsToProfile({ profile, text: _text, ...args }: PlanArgs): Dispatc
 }
 
 async function resolvePlan(args: PlanArgs): Promise<ExecutionPlan> {
+  if (args.repositories?.length && !args.profile) {
+    throw new Error("Save repo catalogs in a named profile first, then pass that profile to delegaitor_plan/delegaitor_dispatch.");
+  }
   return resolveExecutionPlan(args.text ?? "", profileToResolveOptions(planArgsToProfile(args)));
 }
 
@@ -211,8 +227,8 @@ server.registerTool(
   {
     title: "Dispatch tickets to isolated worktrees and agent sessions",
     description:
-      "Resolves ticket text into a plan, persists it, then for each ticket creates a dedicated git " +
-      "branch+worktree and launches an agent session (in a new cmux workspace if available, otherwise a " +
+      "Resolves ticket text into a plan, persists it, creates all catalog repo branches/worktrees under one " +
+      "ticket workspace, and launches exactly one agent session per ticket (in one cmux workspace if available, otherwise a " +
       "detached background process). Returns session ids needed for delegaitor_lock_*, delegaitor_message_*, " +
       "and delegaitor_session_complete.",
     inputSchema: ticketSourceInputSchema,
@@ -223,24 +239,32 @@ server.registerTool(
     persistPlan(plan, args.text ?? "");
 
     const results = [];
-    for (const ticket of plan.tickets) {
+    for (const ticket of primaryTickets(plan)) {
       try {
         const result = await dispatchTicket(plan, ticket);
         results.push({
           ticketId: ticket.id,
           title: ticket.title,
           sessionId: result.sessionId,
-          branch: ticket.branch,
+          repositories: result.worktrees,
           worktreePath: result.worktreePath,
           launchMethod: result.launch.method,
           cmuxWorkspaceId: result.launch.cmuxWorkspaceId,
           boardStatus: result.boardStatus,
         });
       } catch (err) {
-        results.push({ ticketId: ticket.id, error: err instanceof Error ? err.message : String(err) });
+        markWorkUnitFailed(ticket.id);
+        results.push({
+          ticketId: ticket.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     }
-    return jsonResult({ runId: plan.runId, tickets: results });
+    const report = { runId: plan.runId, tickets: results };
+    const failed = results.filter((result) => "error" in result);
+    return failed.length
+      ? { content: [{ type: "text" as const, text: JSON.stringify(report, null, 2) }], isError: true }
+      : jsonResult(report);
   },
 );
 
@@ -264,16 +288,26 @@ server.registerTool(
     title: "Save a dispatch profile",
     description:
       "Saves plan/dispatch options under a name for later use with `profile`. With merge: true only the given " +
-        "fields change; otherwise the profile is replaced. repoPath should be an absolute path to the local clone. " +
+        "fields change, and `repositories` entries are added or replaced by alias; otherwise the profile is " +
+        "replaced. removeRepositories drops catalog entries by alias (implies merge). repoPath should be an " +
+        "absolute path to the local clone. " +
         "Check the options with delegaitor_plan first so the saved profile is known to resolve the right tickets.",
     inputSchema: {
       name: z.string().describe('Profile name, e.g. "my-board"'),
       description: z.string().optional().describe("What the profile is for"),
       merge: z.boolean().optional(),
+      removeRepositories: z.array(z.string()).optional().describe("Catalog aliases to drop"),
       ...profileFields,
     },
   },
-  async ({ name, merge, ...fields }) => jsonResult({ name, profile: saveProfile(name, fields as DispatchProfile, { merge }) }),
+  async ({ name, merge, removeRepositories, ...fields }) =>
+    jsonResult({
+      name,
+      profile: saveProfile(name, fields as DispatchProfile, {
+        merge: merge || !!removeRepositories?.length,
+        removeRepositories,
+      }),
+    }),
 );
 
 server.registerTool(
@@ -299,7 +333,16 @@ server.registerTool(
         `SELECT id, title, repo_id as repoId, status FROM tickets ${ticketId ? "WHERE id = ?" : ""} ORDER BY created_at DESC`,
       )
       .all(...(ticketId ? [ticketId] : [])) as { id: string; title: string; repoId: string; status: string }[];
-    const withSessions = rows.map((t) => ({ ...t, sessions: listSessions({ ticketId: t.id }) }));
+    const withSessions = rows.map((t) => ({
+      ...t,
+      workUnits: getDb()
+        .prepare(
+          `SELECT id as unitId, repo_alias as repoAlias, repo_id as repoId, status, branch, worktree_path as worktreePath
+           FROM ticket_units WHERE ticket_id = ? AND active = 1 ORDER BY repo_alias`,
+        )
+        .all(t.id),
+      sessions: listSessions({ ticketId: t.id }),
+    }));
     return jsonResult(withSessions);
   },
 );
@@ -320,7 +363,7 @@ server.registerTool(
     },
   },
   async ({ sessionId, ticketId, resource, repoId }) => {
-    const repo = repoId ?? repoIdForTicket(ticketId);
+    const repo = repoId ?? repoIdForSession(sessionId);
     return jsonResult(acquireLock({ repoId: repo, resource, ticketId, sessionId }));
   },
 );
@@ -388,13 +431,14 @@ server.registerTool(
     title: "Report a session as finished or blocked",
     description:
       "Marks a session's outcome (e.g. status 'ready_for_review', 'blocked', 'done') and releases any locks " +
-      "it still holds so other sessions can proceed. If board statuses were configured at dispatch, this also " +
-      "moves the source ticket (Notion/Linear/Jira) to the matching column; the result is returned as boardStatus.",
+      "it still holds so other sessions can proceed. For multi-repo tickets, ready_for_review records ready-to-ship " +
+      "until all changed repos have PRs; done is reserved for safe parent close after required PRs are merged. " +
+      "The result includes parentStatus and boardStatus.",
     inputSchema: { sessionId: z.string(), status: z.string(), summary: z.string().optional() },
   },
   async ({ sessionId, status, summary }) => {
     const result = await completeSession(sessionId, status, summary);
-    return jsonResult({ sessionId, status, boardStatus: result.boardStatus ?? null });
+    return jsonResult({ sessionId, status, parentStatus: result.parentStatus ?? null, boardStatus: result.boardStatus ?? null });
   },
 );
 
@@ -417,7 +461,8 @@ server.registerTool(
     description:
       "One entry per open ticket (its latest session) with `next`: unblock (agent is blocked), ship (done but no " +
       "PR), review (PR open), address review (changes requested), close (PR merged), working, or check (failed). " +
-      "Includes the PR (via gh), the agent's summary, unread messages and held locks.",
+      "Shows one session and each catalog repo's branch, affected/no-change state, and PR. " +
+      "Includes the agent's summary, unread messages and held locks.",
     inputSchema: {
       includeFinished: z.boolean().optional(),
       pullRequests: z.boolean().optional().describe("Look up PRs with gh (default true)"),
@@ -431,16 +476,15 @@ server.registerTool(
   {
     title: "Push a ticket's branch and open its pull request",
     description:
-      "Pushes the ticket's branch and opens a PR against its base branch with a link to the ticket (or returns the " +
-      "already-open PR), then marks the session ready_for_review, which moves the board card if configured. " +
-      "Refuses with uncommitted changes or no commits. Never force-pushes. Write a real title and body summarizing " +
+      "For a multi-repo session, rejects if any worktree is dirty, skips repos with no commits, and opens/reuses a PR " +
+      "for each changed repo. A PR error in any repo prevents the parent from moving to review. Never force-pushes. Write a real title and body summarizing " +
       "the change for reviewers; the default body is just the commit list.",
     inputSchema: {
       ref: z.string().describe("Session id, ticket id, or branch name"),
       title: z.string().optional().describe("PR title (default: ticket title)"),
       body: z.string().optional().describe("PR description in markdown; a ticket link is appended"),
       draft: z.boolean().optional(),
-      markReady: z.boolean().optional().describe("Mark the session ready_for_review (default true)"),
+      markReady: z.boolean().optional().describe("Move the parent to review when all changed repos have PRs (default true)"),
       dryRun: z.boolean().optional(),
     },
   },
@@ -479,8 +523,8 @@ server.registerTool(
     title: "Reply to a session's agent",
     description:
       "Types text into a session's agent prompt in its cmux tab and presses Enter, as if the user replied there. " +
-      "A blocked session is marked running again and its board card moved back to in progress. Newlines are sent " +
-      "as spaces. Only send what the user approved.",
+      "A blocked session is marked running again and its configured repo worktrees return to dispatched. " +
+      "Newlines are sent as spaces. Only send what the user approved.",
     inputSchema: { ref: z.string(), text: z.string(), resume: z.boolean().optional() },
   },
   async ({ ref, text, resume }) => jsonResult(await nudgeSession(ref, text, { resume })),
@@ -491,11 +535,12 @@ server.registerTool(
   {
     title: "Close a finished ticket",
     description:
-      "Closes a delegated ticket once its work has landed: removes the worktree, deletes the local and remote " +
-      "branch, marks the session done, moves the board card to the done column (if configured), and closes the " +
+      "Closes a parent ticket after every required PR is merged: preflights every repo, removes the worktrees, deletes local and remote " +
+      "branches, marks the session done, and closes the " +
       "ticket's cmux tab last (which ends the agent running in it). Refuses if the pull request is open, the work " +
       "isn't merged, or the worktree has uncommitted changes, unless force is true. Steps already done by hand are " +
-      "reported as 'already gone', so it's safe to re-run. Use dryRun first to preview.",
+      "reported as 'already gone', so it's safe to re-run. The parent board card moves to done only after all required " +
+      "PRs are merged and cleanup succeeds. Use dryRun first to preview.",
     inputSchema: {
       ref: z.string().describe("Session id or ticket id"),
       force: z.boolean().optional(),
@@ -572,14 +617,6 @@ server.registerTool(
     return jsonResult({ candidateCount: candidates.length, reports });
   },
 );
-
-function repoIdForTicket(ticketId: string): string {
-  const row = getDb().prepare(`SELECT repo_id as repoId FROM tickets WHERE id = ?`).get(ticketId) as
-    | { repoId: string }
-    | undefined;
-  if (!row) throw new Error(`Unknown ticket id: ${ticketId}`);
-  return row.repoId;
-}
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

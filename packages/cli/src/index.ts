@@ -23,6 +23,7 @@ import {
   unreadMessagesFor,
   markRead,
   notifyCmux,
+  markWorkUnitFailed,
   getDb,
   syncBoardStatus,
   isBoardLifecycle,
@@ -38,15 +39,18 @@ import {
   cleanProfile,
   profileToResolveOptions,
   profileHasTicketSource,
+  repoIdForSession,
   saveProfile,
   listProfiles,
   removeProfile,
   profilesPath,
+  primaryTickets,
   type DispatchProfile,
   type BoardStatusResult,
   type AgentRuntimeKind,
   type ExecutionPlan,
   type CleanupReport,
+  type RepoCatalogEntry,
 } from "@delegaitor/core";
 
 const program = new Command();
@@ -60,6 +64,7 @@ addPlanOptions(
     .option("-f, --file <path>", "read ticket text from a file instead of the argument")
     .option("--profile <name>", "use a saved profile (see `delegaitor profile`); flags you pass override it"),
 ).action(async (text, opts) => {
+  ensureRepositoryProfile(opts);
   const profile = planProfile(opts);
   const rawInput = await readInput(text, opts.file, profile);
   const plan = await resolveExecutionPlan(rawInput, profileToResolveOptions(profile));
@@ -75,6 +80,7 @@ addPlanOptions(
     .option("--profile <name>", "use a saved profile (see `delegaitor profile`); flags you pass override it")
     .option("-y, --yes", "skip confirmation prompt"),
 ).action(async (text, opts) => {
+  ensureRepositoryProfile(opts);
   const profile = planProfile(opts);
   const rawInput = await readInput(text, opts.file, profile);
   const plan = await resolveExecutionPlan(rawInput, profileToResolveOptions(profile));
@@ -82,7 +88,7 @@ addPlanOptions(
   if (!plan.tickets.length) return;
 
   if (!opts.yes) {
-    const proceed = await confirm(`Dispatch ${plan.tickets.length} ticket(s)? [y/N] `);
+    const proceed = await confirm(`Dispatch ${primaryTickets(plan).length} ticket(s)? [y/N] `);
     if (!proceed) {
       console.log("Aborted.");
       return;
@@ -90,20 +96,29 @@ addPlanOptions(
   }
 
   persistPlan(plan, rawInput);
-  for (const ticket of plan.tickets) {
+  let failedCount = 0;
+  for (const ticket of primaryTickets(plan)) {
     process.stdout.write(`Dispatching ${ticket.id} (${ticket.agent})... `);
     try {
       const result = await dispatchTicket(plan, ticket);
       console.log(
         `${result.launch.method}${result.launch.cmuxWorkspaceId ? ` [${result.launch.cmuxWorkspaceId}]` : ""} ` +
-          `session=${result.sessionId}`,
+          `session=${result.sessionId}` +
+          (result.worktrees.length > 1 ? ` repos=${result.worktrees.map((unit) => unit.repoAlias).join(",")}` : ""),
       );
       printBoardStatus(result.boardStatus);
     } catch (err) {
-      console.log(`FAILED: ${err instanceof Error ? err.message : String(err)}`);
+      failedCount++;
+      markWorkUnitFailed(ticket.id);
+      console.log(`FAILED [${ticket.repoAlias ?? ticket.repoId}]: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
-  await notifyCmux("delegAItor", `Dispatched ${plan.tickets.length} ticket(s)`);
+  const ticketCount = primaryTickets(plan).length;
+  await notifyCmux("delegAItor", `Dispatched ${ticketCount - failedCount}/${ticketCount} ticket(s)`);
+  if (failedCount) {
+    console.error(`${failedCount} ticket session(s) failed to dispatch.`);
+    process.exitCode = 1;
+  }
 });
 
 program
@@ -124,6 +139,13 @@ program
           (i.cmuxWorkspaceId ? `  ${i.cmuxWorkspaceId}` : ""),
       );
       if (i.pullRequest) console.log(`  PR #${i.pullRequest.number} ${i.pullRequest.state.toLowerCase()}: ${i.pullRequest.url}`);
+      for (const unit of i.units) {
+        console.log(
+          `  repo ${unit.repoAlias} (${unit.repoId})  ${unit.sessionId ? `session ${unit.sessionId}` : "not started"} [${unit.status}]  branch ${unit.branch}` +
+          (unit.pullRequest ? `  PR #${unit.pullRequest.number} ${unit.pullRequest.state.toLowerCase()}` : "") +
+          (unit.summary ? `\n    summary: ${unit.summary}` : ""),
+        );
+      }
       if (i.summary) console.log(`  summary: ${i.summary}`);
       if (i.locks.length) console.log(`  holding locks: ${i.locks.join(", ")}`);
       for (const m of i.unreadMessages) console.log(`  unread [${m.kind}] from ${m.fromSessionId}: ${m.body}`);
@@ -141,10 +163,19 @@ program
       )
       .all(...(opts.ticket ? [opts.ticket] : [])) as { id: string; title: string; repoId: string; status: string }[];
     for (const t of rows) {
-      console.log(`\n${t.id}  [${t.status}]  ${t.title}  (${t.repoId})`);
+      console.log(`\n${t.id}  [${t.status}]  ${t.title}${t.repoId ? `  (${t.repoId})` : ""}`);
+      const units = getDb()
+        .prepare(
+          `SELECT repo_alias as repoAlias, repo_id as repoId, status, branch, worktree_path as worktreePath
+           FROM ticket_units WHERE ticket_id = ? AND active = 1 ORDER BY repo_alias`,
+        )
+        .all(t.id) as { repoAlias: string; repoId: string; status: string; branch: string; worktreePath: string }[];
+      for (const unit of units) {
+        console.log(`  work unit ${unit.repoAlias} (${unit.repoId}) [${unit.status}]  branch=${unit.branch}`);
+      }
       for (const s of listSessions({ ticketId: t.id })) {
         console.log(
-          `  session ${s.id}  agent=${s.agent}  branch=${s.branch}  status=${s.status}` +
+          `  ${s.repoAlias}  ${s.repoId}  session ${s.id}  agent=${s.agent}  branch=${s.branch}  status=${s.status}` +
             (s.cmuxWorkspaceId ? `  cmux=${s.cmuxWorkspaceId}` : ""),
         );
       }
@@ -160,14 +191,20 @@ addPlanOptions(
     .command("save")
     .description(
       "Save the given flags as a profile. Without --merge this replaces the profile; with it, only the flags " +
-        "you pass change. A repo without --repo-path gets the current directory.",
+        "you pass change, and --repository adds or replaces one catalog entry by alias. A repo without " +
+        "--repo-path gets the current directory.",
     )
     .argument("<name>")
     .option("--description <text>", "what this profile is for, shown in `profile list`")
-    .option("--merge", "update an existing profile instead of replacing it"),
+    .option("--merge", "update an existing profile instead of replacing it")
+    .option("--remove-repository <alias>", "drop a repository from the catalog (repeatable; implies --merge)", appendOption, []),
 ).action((name, opts) => {
   try {
-    const saved = saveProfile(name, { ...cliProfile(opts), description: opts.description }, { merge: opts.merge });
+    const removeRepos: string[] = opts.removeRepository ?? [];
+    const saved = saveProfile(name, { ...cliProfile(opts), description: opts.description }, {
+      merge: opts.merge || removeRepos.length > 0,
+      removeRepositories: removeRepos,
+    });
     console.log(`Saved profile "${name}" to ${profilesPath()}:`);
     console.log(JSON.stringify(saved, null, 2));
   } catch (e) {
@@ -209,7 +246,7 @@ lock
   .requiredOption("--resource <name>")
   .option("--repo <id>", "defaults to the ticket's repo")
   .action((opts) => {
-    const repoId = opts.repo ?? repoIdForTicket(opts.ticket);
+    const repoId = opts.repo ?? repoIdForSession(opts.session);
     const res = acquireLock({ repoId, resource: opts.resource, ticketId: opts.ticket, sessionId: opts.session });
     if (res.ok) {
       console.log(`OK: lock ${res.lockId} acquired on "${opts.resource}"`);
@@ -291,17 +328,33 @@ ticket
       markReady: opts.markReady,
       dryRun: opts.dryRun,
     }).catch(fail);
-    console.log(`${r.dryRun ? "[dry-run] " : ""}ticket ${r.ticketId}  branch ${r.branch} -> ${r.baseRef}`);
-    console.log(`  ${r.commits.length} commit(s): ${r.commits.join("; ")}`);
-    console.log(`  push: ${r.pushed}`);
-    if (r.pullRequest) {
-      console.log(`  PR #${r.pullRequest.number} ${r.pullRequest.created ? "opened" : "already open"}: ${r.pullRequest.url}`);
-    } else if (r.pullRequestError) {
-      console.log(`  PR: could not open: ${r.pullRequestError}`);
+    console.log(`${r.dryRun ? "[dry-run] " : ""}ticket ${r.ticketId}  session ${r.sessionId}`);
+    if (r.units) {
+      for (const unit of r.units) {
+        console.log(`  ${unit.repoAlias} (${unit.repoId}) [${unit.status}]  branch ${unit.branch}`);
+        console.log(`    push: ${unit.push}`);
+        console.log(`    ${unit.commits.length} commit(s): ${unit.commits.join("; ") || "(none)"}`);
+        if (unit.pullRequest) console.log(`    PR #${unit.pullRequest.number} ${unit.pullRequest.created ? "opened" : "already open"}: ${unit.pullRequest.url}`);
+        if (unit.error) console.log(`    error: ${unit.error}`);
+      }
+    } else {
+      console.log(`  branch ${r.branch} -> ${r.baseRef}`);
+      console.log(`  ${r.commits.length} commit(s): ${r.commits.join("; ")}`);
+      console.log(`  push: ${r.pushed}`);
+      if (r.pullRequest) {
+        console.log(`  PR #${r.pullRequest.number} ${r.pullRequest.created ? "opened" : "already open"}: ${r.pullRequest.url}`);
+      } else if (r.pullRequestError) {
+        console.log(`  PR: could not open: ${r.pullRequestError}`);
+      }
     }
     for (const w of r.warnings) console.log(`  warning: ${w}`);
     printBoardStatus(r.boardStatus);
+    if (r.parentStatus) console.log(`Parent ticket status: ${r.parentStatus}`);
     if (r.pullRequestError) process.exitCode = 1;
+    if (r.parentStatus && r.parentStatus !== "ready_for_review") {
+      console.log(`  parent ticket remains ${r.parentStatus} until every changed repo has a PR`);
+    }
+    if (r.units?.some((unit) => unit.status === "failed")) process.exitCode = 1;
   });
 ticket
   .command("context")
@@ -352,7 +405,17 @@ ticket
     for (const st of report.steps) {
       console.log(`  ${st.step.padEnd(22)} ${st.result}${st.detail ? `  (${st.detail})` : ""}`);
     }
+    for (const unit of report.units ?? []) {
+      console.log(`  repo ${unit.repoAlias} (${unit.repoId}) [${unit.status}] branch=${unit.branch}` +
+        (unit.pullRequest ? ` PR #${unit.pullRequest.number} ${unit.pullRequest.state.toLowerCase()}` : "") +
+        (unit.error ? ` error=${unit.error}` : ""));
+    }
     printBoardStatus(report.boardStatus);
+    if (report.parentStatus) {
+      console.log(`Parent ticket status: ${report.parentStatus}`);
+      if (report.parentStatus !== "done") console.log("  parent remains open until all required PRs are merged and cleanup succeeds");
+    }
+    if (report.steps.some((step) => step.result === "failed") || report.units?.some((unit) => unit.status === "failed")) process.exitCode = 1;
   });
 ticket
   .command("move")
@@ -421,6 +484,7 @@ session
   .action(async (opts) => {
     const result = await completeSession(opts.session, opts.status, opts.summary);
     printBoardStatus(result.boardStatus);
+    if (result.parentStatus) console.log(`Parent ticket status: ${result.parentStatus}`);
     await notifyCmux("delegAItor", `Session ${opts.session}: ${opts.status}${opts.summary ? ` — ${opts.summary}` : ""}`);
     console.log("OK");
   });
@@ -441,6 +505,7 @@ session
   .action(async (ref, text: string[], opts) => {
     const r = await nudgeSession(ref, text.join(" "), { resume: opts.resume }).catch(fail);
     console.log(`Sent to session ${r.sessionId}${r.resumed ? " (resumed from blocked)" : ""}.`);
+    if (r.parentStatus) console.log(`Parent ticket status: ${r.parentStatus}`);
     printBoardStatus(r.boardStatus);
   });
 session
@@ -539,6 +604,12 @@ function addPlanOptions(cmd: Command): Command {
     .option("--agent <runtime>", "default agent runtime: claude, copilot, codex, opencode (default: claude)")
     .option("--repo <owner/repo>", "default repo for #123-style refs and markdown tickets")
     .option("--repo-path <path>", "local path of --repo (defaults to cwd)")
+    .option(
+      "--repository <alias|owner/repo|path|base>",
+      "local repository catalog entry for this profile (repeatable; all four fields required)",
+      appendOption,
+      [],
+    )
     .option("--base <ref>", "default base branch (default: main)")
     .option("--branch-prefix <prefix>", "force this prefix on every branch, e.g. \"fix/\" (\"\" for none); default: picked per ticket")
     .option("--branch-rules <file>", "branch-prefixes.json describing your team's prefixes (default: <repo>/.delegaitor/branch-prefixes.json, then ~/.delegaitor/branch-prefixes.json, then detected from the repo's branches)")
@@ -547,6 +618,7 @@ function addPlanOptions(cmd: Command): Command {
     .option("--github-comments", "also fetch each GitHub issue's comment thread as extra ticket context")
     .option("--notion-db <id>", "Notion database id to also pull tickets from")
     .option("--notion-assignee-id <id>", "Your Notion user id, for shared/workspace-owned integration tokens that can't auto-detect it")
+    .option("--notion-assignee-prop <name>", "Notion people property containing assignees (default: Assignee)")
     .option("--notion-status <statuses>", "comma-separated Status values to delegate, exactly as they appear on your board (e.g. \"Not started,Backlog\"); default pulls every status")
     .option("--notion-project-prop <name>", "Notion property exposing a human-readable project/initiative name (e.g. a rollup surfacing a related Project relation's title), used with --notion-project")
     .option("--notion-project <names>", "comma-separated project/initiative names to delegate (requires --notion-project-prop); every board organizes projects differently, so there's no default")
@@ -579,6 +651,7 @@ type PlanCliOptions = {
   githubComments?: boolean;
   notionDb?: string;
   notionAssigneeId?: string;
+  notionAssigneeProp?: string;
   notionStatus?: string;
   notionTitleProp?: string;
   notionStatusProp?: string;
@@ -596,6 +669,7 @@ type PlanCliOptions = {
   moveOnReview?: string;
   moveOnBlocked?: string;
   moveOnDone?: string;
+  repository?: string[];
 };
 
 /** The flags actually passed, in profile form. Unset flags are left undefined so they don't override a profile. */
@@ -607,11 +681,13 @@ function cliProfile(opts: PlanCliOptions): DispatchProfile {
     base: opts.base,
     branchPrefix: opts.branchPrefix,
     branchRules: opts.branchRules,
+    repositories: opts.repository?.length ? opts.repository.map(parseRepositorySpec) : undefined,
     all: opts.all,
     githubMine: opts.githubMine,
     githubComments: opts.githubComments,
     notionDatabaseId: opts.notionDb,
     notionAssigneeId: opts.notionAssigneeId,
+    notionAssigneeProp: opts.notionAssigneeProp,
     notionStatuses: parseStatusList(opts.notionStatus),
     notionTitleProp: opts.notionTitleProp,
     notionStatusProp: opts.notionStatusProp,
@@ -650,6 +726,12 @@ function fail(e: Error): never {
   process.exit(1);
 }
 
+function ensureRepositoryProfile(opts: PlanCliOptions): void {
+  if (opts.repository?.length && !opts.profile) {
+    throw new Error("Save repo catalogs with `delegaitor profile save <name> --repository ...`, then plan/dispatch with --profile.");
+  }
+}
+
 function printBoardStatus(result: BoardStatusResult | undefined): void {
   if (!result) return;
   console.log(
@@ -674,32 +756,32 @@ function parseStatusList(raw: string | undefined): string[] | undefined {
   return values.length ? values : undefined;
 }
 
-function repoIdForTicket(ticketId: string): string {
-  const row = getDb().prepare(`SELECT repo_id as repoId FROM tickets WHERE id = ?`).get(ticketId) as
-    | { repoId: string }
-    | undefined;
-  if (!row) {
-    console.error(`Unknown ticket id: ${ticketId}`);
-    process.exit(1);
-  }
-  return row.repoId;
-}
-
 function printPlan(plan: ExecutionPlan): void {
   if (!plan.tickets.length) {
     console.log("No tickets resolved from input.");
     return;
   }
   console.log(`Run ${plan.runId}\n`);
-  for (const t of plan.tickets) {
+  for (const t of primaryTickets(plan)) {
+    const repos = t.coordinationUnits;
     console.log(
       `${t.id}  [${t.agent}]  ${t.title}\n` +
-        `  repo=${t.repoId}  branch=${t.branch}  base=${t.baseRef}\n` +
+        (repos
+          ? `  one session across ${repos.length} catalog repo(s): ${repos.map((unit) => `${unit.alias}=${unit.repoId} branch=${unit.branch} base=${unit.baseRef}`).join("; ")}\n`
+          : `  repo=${t.repoId}  branch=${t.branch}  base=${t.baseRef}\n`) +
         (t.branchNaming ? `  prefix=${t.branchNaming.prefix || "(none)"}  (${t.branchNaming.reason})\n` : "") +
         (t.dependsOn?.length ? `  depends_on=${t.dependsOn.join(",")}\n` : "") +
         (t.conflictsWith.length ? `  ⚠ possible conflict with: ${t.conflictsWith.join(", ")}\n` : ""),
     );
   }
+}
+
+function parseRepositorySpec(spec: string): RepoCatalogEntry {
+  const [alias, repoId, repoPath, base, ...extra] = spec.split("|");
+  if (!alias || !repoId || !repoPath || !base || extra.length) {
+    throw new Error(`Invalid --repository "${spec}". Expected alias|owner/repo|/absolute/path|base.`);
+  }
+  return { alias, repoId, repoPath, base };
 }
 
 function printCleanupReport(report: CleanupReport): void {
@@ -761,4 +843,8 @@ async function readStdinIfPiped(): Promise<string | undefined> {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
   return Buffer.concat(chunks).toString("utf8");
+}
+
+function appendOption(value: string, previous: string[] = []): string[] {
+  return [...previous, value];
 }

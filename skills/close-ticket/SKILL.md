@@ -22,9 +22,14 @@ In order of preference:
 4. Otherwise call `delegaitor_overview`. Entries with `next: "close"` have a
    merged PR. If there's exactly one, suggest it; otherwise ask which.
 
+Use the one parent session id or ticket id. Multi-repository close operates
+on the whole parent and all catalog worktrees together.
+
 ## 2. Preview
 
-Call `delegaitor_ticket_close` with `{ "ref": "<id>", "dryRun": true }`.
+Call `delegaitor_ticket_close` with `{ "ref": "<session-id>", "dryRun": true }`.
+The preview checks all repos and refuses if any required PR is open/unmerged
+or any worktree is dirty. Verify all required PRs are merged before closing.
 
 - If it returns an error saying the pull request is still open, the work isn't
   merged, or the worktree has uncommitted changes, **stop and tell the user**.
@@ -35,7 +40,9 @@ Call `delegaitor_ticket_close` with `{ "ref": "<id>", "dryRun": true }`.
 
 ## 3. Close
 
-Call `delegaitor_ticket_close` with `{ "ref": "<id>" }`. Add:
+After the user confirms, call `delegaitor_ticket_close` once for the parent
+with `{ "ref": "<session-id>" }`. It cleans all repos and moves the board
+card to done only when all required PRs are merged and cleanup succeeds. Add:
 
 - `keepRemote: true` if the user wants to keep the remote branch.
 - `keepTab: true` if you are running inside the ticket's own cmux tab and the

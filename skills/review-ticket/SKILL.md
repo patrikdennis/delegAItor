@@ -15,9 +15,12 @@ Find the ticket as in the other delegAItor skills (cwd under
 `~/.delegaitor/worktrees/.../<ticket-id>`, an id the user gave, or
 `delegaitor_overview` entries with `next: review`).
 
-Call `delegaitor_ticket_context` with `{ "ref": "<id>" }`. If
+Call `delegaitor_ticket_context` with `{ "ref": "<id-or-unit-session>" }`. If
 `diffTruncated` is true, read the remaining files directly from the
 worktree or with `git diff` for the files in `diffStat`.
+
+For a multi-repository parent, review the aggregate context once; it contains
+separate diffs for the affected catalog repos.
 
 Also read the repository's own review guidance if present (AGENTS.md,
 CONTRIBUTING, `.github/copilot-instructions.md`, CLAUDE.md).

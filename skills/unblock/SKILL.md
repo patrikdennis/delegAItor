@@ -16,7 +16,10 @@ sessions, which the agents handle themselves).
 ## 2. Work out each question
 
 For each entry:
-- The `summary` is usually the agent's reason for blocking.
+- For multi-repo entries, handle each blocked item in `units` separately;
+  its `sessionId`, `repoAlias`, and `summary` identify the exact agent.
+- The entry's `summary` (or the blocked unit's summary) is usually the
+  agent's reason for blocking.
 - For more context, call `delegaitor_session_screen` with its `sessionId`
   (e.g. `lines: 60`) to read what the agent last said. Skip lines that are
   just tool output.

@@ -1,6 +1,7 @@
 import { execa } from "execa";
 import { getDb } from "./db.js";
 import { findSession } from "./sessions.js";
+import { refreshParentTicketStatus } from "./orchestrator.js";
 import { sendMessage } from "./sync/messages.js";
 import { syncBoardStatus, type BoardStatusResult } from "./tickets/board-status.js";
 
@@ -36,6 +37,7 @@ export interface NudgeResult {
   sessionId: string;
   ticketId: string;
   resumed: boolean;
+  parentStatus?: string;
   boardStatus?: BoardStatusResult;
 }
 
@@ -64,9 +66,14 @@ export async function nudgeSession(ref: string, text: string, opts: { resume?: b
   if ((opts.resume ?? true) && s.sessionStatus === "blocked") {
     const db = getDb();
     db.prepare(`UPDATE sessions SET status = 'running', ended_at = NULL WHERE id = ?`).run(s.sessionId);
-    db.prepare(`UPDATE tickets SET status = 'dispatched', updated_at = datetime('now') WHERE id = ?`).run(s.ticketId);
+    if (s.multiRepo) {
+      db.prepare(`UPDATE ticket_units SET status = 'dispatched', updated_at = datetime('now') WHERE ticket_id = ? AND active = 1`).run(s.ticketId);
+    } else {
+      db.prepare(`UPDATE ticket_units SET status = 'dispatched', updated_at = datetime('now') WHERE id = ?`).run(s.unitId);
+    }
+    result.parentStatus = refreshParentTicketStatus(s.ticketId, "in_progress");
     result.resumed = true;
-    result.boardStatus = await syncBoardStatus(s.ticketId, "in_progress");
+    if (result.parentStatus === "in_progress") result.boardStatus = await syncBoardStatus(s.ticketId, "in_progress");
   }
   return result;
 }

@@ -49,6 +49,8 @@ Managing profiles:
 | See all profiles | `delegaitor profile list` |
 | See one | `delegaitor profile show my-board` |
 | Change one field | `delegaitor profile save my-board --merge --notion-status "Backlog"` |
+| Add a repo to a multi-repo profile | `delegaitor profile save my-board --merge --repository 'jobs\|owner/jobs\|/work/jobs\|main'` |
+| Drop a repo from it | `delegaitor profile save my-board --remove-repository jobs` |
 | Replace it | `delegaitor profile save my-board <all flags>` (without `--merge`) |
 | Add a second board | `delegaitor profile save other-board <its flags>` |
 | Override once, without saving | `delegaitor plan --profile my-board --agent claude` |

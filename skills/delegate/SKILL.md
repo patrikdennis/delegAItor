@@ -32,15 +32,26 @@ Point out:
   with the user before changing them. Never switch to `all: true` without
   asking, since that pulls every teammate's tickets too.
 
+For a multi-repository profile, the plan lists every configured repository
+and its branch/worktree. Dispatch creates all those isolated worktrees before
+launching one session per ticket. The agent receives the ticket and catalog
+context and decides which worktrees need edits; do not request a separate
+repo selection or approval.
+
 ## 3. Dispatch
 
-Only after the user confirms, call `delegaitor_dispatch` with the same
-arguments. Report per ticket: session id, `launchMethod`, and `boardStatus`.
+Only after the user confirms dispatch, call `delegaitor_dispatch` with the
+same arguments. Report one session id per ticket, its catalog repos, launch
+method, and board status. The agent reports affected and no-change repos
+separately; only changed repos need PRs.
 
 - `launchMethod: "detached-terminal"` means no cmux tab opened (this session
   isn't inside cmux). Tell the user to run it from a cmux tab instead:
   `delegaitor dispatch --profile <name>`.
 - `boardStatus.ok: false`: quote the error; it lists the valid column names.
+- A multi-repo parent moves to review only after every affected repo has a
+  PR, and to done only after all required PRs are merged and the parent is
+  closed.
 
 ## Create a profile
 
@@ -53,7 +64,8 @@ Ask for what you can't find out yourself, in one go:
 3. Which columns to move cards to when work starts, is ready for review, is
    blocked, and is done. Leave out any the user doesn't use.
 4. The GitHub repo (`owner/repo`), its local clone path (absolute), and the
-   agent (`copilot`, `claude`, ...).
+   agent (`copilot`, `claude`, ...). For a multi-repo catalog, ask for each
+   local alias, repo id, clone path, and base branch.
 
 For Notion, property names differ per board (e.g. the title may be `Task`,
 the project a rollup like `Project Rollup`). If unsure, try a plan and

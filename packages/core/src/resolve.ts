@@ -1,7 +1,9 @@
 import { execa } from "execa";
-import type { AgentRuntimeKind, ExecutionPlan, NormalizedTicket } from "./types.js";
+import { isAbsolute } from "node:path";
+import type { AgentRuntimeKind, ExecutionPlan, NormalizedTicket, RepoCatalogEntry } from "./types.js";
 import { buildPlan } from "./planner.js";
 import { loadBranchPrefixRules, type BranchPrefixRules } from "./worktree/branch-prefix.js";
+import { sanitize } from "./paths.js";
 import {
   githubTicketSource,
   markdownTicketSource,
@@ -29,6 +31,8 @@ export interface ResolveExecutionPlanOptions {
   branchPrefix?: string;
   /** Path to a branch-prefixes.json file, overriding the repo/home lookup. */
   branchRulesFile?: string;
+  /** Local catalog is the allowed repo scope; every entry gets an isolated worktree. */
+  repoCatalog?: RepoCatalogEntry[];
   /**
    * Shared "not all tickets are ours" switch for shared boards
    * (Notion/Linear/Jira): when false (the default), each of those sources
@@ -77,9 +81,13 @@ export async function resolveExecutionPlan(
   input: string,
   opts: ResolveExecutionPlanOptions,
 ): Promise<ExecutionPlan> {
-  const repoPath = opts.repoPath ?? process.cwd();
-  const repoId = opts.repo ?? (await inferRepoId(repoPath));
+  const repoPath = opts.repoPath ?? opts.repoCatalog?.[0]?.repoPath ?? process.cwd();
+  const repoId = opts.repo ?? opts.repoCatalog?.[0]?.repoId ?? (await inferRepoId(repoPath));
   const all = opts.all ?? false;
+  validateRepoCatalog(opts.repoCatalog);
+  if (opts.repoCatalog?.length && (opts.repo || opts.repoPath)) {
+    throw new Error("A repository catalog cannot be combined with single-repository repo/repoPath settings.");
+  }
 
   const githubOpts: GithubSourceOptions = {
     defaultRepo: repoId,
@@ -134,17 +142,44 @@ export async function resolveExecutionPlan(
     }
   }
 
+  let routed = resolved;
+  if (opts.repoCatalog?.length) {
+    routed = [];
+    for (const ticket of resolved) {
+      const id = sanitize(ticket.externalId);
+      if (new Set(opts.repoCatalog.map((entry) => entry.repoId)).size !== opts.repoCatalog.length) {
+        throw new Error("A repository catalog cannot contain multiple aliases for the same repo id.");
+      }
+      for (const entry of opts.repoCatalog) {
+        routed.push({
+          ...ticket,
+          repoAlias: entry.alias,
+          repoId: entry.repoId,
+          repoPath: entry.repoPath,
+          baseRef: entry.base,
+          unitId: `${id}--${sanitize(entry.alias)}`,
+        });
+      }
+    }
+  }
+
   const branchRules = new Map<string, BranchPrefixRules>();
-  for (const path of new Set(resolved.map((t) => t.repoPath))) {
+  for (const path of new Set(routed.map((t) => t.repoPath))) {
     branchRules.set(path, await loadBranchPrefixRules(path, opts.branchRulesFile));
   }
 
-  const plan = buildPlan(resolved, {
+  const plan = buildPlan(routed, {
     defaultAgent: opts.defaultAgent,
     agentOverrides: opts.agentOverrides,
     branchPrefix: opts.branchPrefix,
     branchRules,
   });
+  if (opts.repoCatalog?.length) {
+    const counts = new Map<string, number>();
+    for (const ticket of plan.tickets) counts.set(ticket.id, (counts.get(ticket.id) ?? 0) + 1);
+    const multiRepoTicketIds = [...counts].filter(([, count]) => count > 1).map(([id]) => id);
+    if (multiRepoTicketIds.length) plan.multiRepoTicketIds = multiRepoTicketIds;
+  }
   const statuses = Object.fromEntries(
     Object.entries(opts.boardStatuses ?? {}).filter(([, name]) => !!name?.trim()),
   ) as BoardStatusMap;
@@ -154,6 +189,23 @@ export async function resolveExecutionPlan(
     }
   }
   return plan;
+}
+
+function validateRepoCatalog(catalog?: RepoCatalogEntry[]): void {
+  if (!catalog?.length) return;
+  const aliases = new Set<string>();
+  for (const entry of catalog) {
+    if (!/^[A-Za-z0-9_-]{1,24}$/.test(entry.alias)) {
+      throw new Error(`Invalid repository alias "${entry.alias}". Use 1 to 24 letters, digits, "_" or "-".`);
+    }
+    if (aliases.has(entry.alias)) throw new Error(`Duplicate repository alias "${entry.alias}" in the active profile.`);
+    aliases.add(entry.alias);
+    if (!entry.repoId.trim()) throw new Error(`Repository "${entry.alias}" needs a repo id (owner/repo).`);
+    if (!isAbsolute(entry.repoPath)) {
+      throw new Error(`Repository "${entry.alias}" needs an absolute repoPath; save its local clone path in the profile.`);
+    }
+    if (!entry.base.trim()) throw new Error(`Repository "${entry.alias}" needs an explicit base branch.`);
+  }
 }
 
 async function inferRepoId(repoPath: string): Promise<string> {

@@ -7,7 +7,8 @@ argument-hint: 'Optional: "all" to include finished tickets.'
 # Ticket status
 
 1. Call `delegaitor_overview` (add `includeFinished: true` if the user asked
-   for everything).
+   for everything). Multi-repo parents include per-unit status, alias, branch,
+   session id, summary, and PR in `units`.
 2. Present it grouped by what the user has to do, most urgent first. Skip
    empty groups:
 
@@ -23,8 +24,9 @@ argument-hint: 'Optional: "all" to include finished tickets.'
    case the user wants to act on one.
 3. End with the concrete next steps, pointing at the skill for each:
    `unblock` for waiting agents, `ship-ticket`, `review-ticket`,
-   `close-ticket`. If several tickets are ready to close, offer to close
-   them all (one `close-ticket` run per ticket, previewing first).
+   `close-ticket`. For multi-repo tickets, act on each unit's session id;
+   parent board transitions are aggregated. If several tickets are ready to
+   close, offer to close them all, previewing every unit first.
 
 If `delegaitor_overview` returns nothing, say there are no open delegated
 tickets and suggest the `delegate` skill.

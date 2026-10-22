@@ -96,6 +96,56 @@ function migrate(db: Database.Database): void {
   if (!ticketCols.has("branch_naming_json")) {
     db.exec(`ALTER TABLE tickets ADD COLUMN branch_naming_json TEXT`);
   }
+
+  const sessionCols = new Set((db.prepare(`PRAGMA table_info(sessions)`).all() as { name: string }[]).map((c) => c.name));
+  if (!sessionCols.has("work_unit_id")) {
+    db.exec(`ALTER TABLE sessions ADD COLUMN work_unit_id TEXT`);
+  }
+  if (!sessionCols.has("multi_repo")) {
+    db.exec(`ALTER TABLE sessions ADD COLUMN multi_repo INTEGER NOT NULL DEFAULT 0`);
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ticket_units (
+      id TEXT PRIMARY KEY,
+      ticket_id TEXT NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+      repo_alias TEXT NOT NULL,
+      repo_id TEXT NOT NULL,
+      repo_path TEXT NOT NULL,
+      base_ref TEXT NOT NULL DEFAULT 'main',
+      branch TEXT NOT NULL,
+      worktree_path TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      branch_naming_json TEXT,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(ticket_id, repo_alias)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ticket_units_parent ON ticket_units(ticket_id);
+  `);
+
+  const unitCols = new Set((db.prepare(`PRAGMA table_info(ticket_units)`).all() as { name: string }[]).map((c) => c.name));
+  if (!unitCols.has("active")) {
+    db.exec(`ALTER TABLE ticket_units ADD COLUMN active INTEGER NOT NULL DEFAULT 1`);
+  }
+
+  // Existing single-repo tickets become one "default" work unit without
+  // changing their ids, branches, sessions, or lookup behavior.
+  db.exec(`
+    INSERT OR IGNORE INTO ticket_units
+      (id, ticket_id, repo_alias, repo_id, repo_path, base_ref, branch, worktree_path, status, branch_naming_json)
+    SELECT t.id, t.id, 'default', t.repo_id, t.repo_path, t.base_ref,
+           COALESCE((SELECT s.branch FROM sessions s WHERE s.ticket_id = t.id ORDER BY s.started_at DESC LIMIT 1), t.id),
+           COALESCE((SELECT s.worktree_path FROM sessions s WHERE s.ticket_id = t.id ORDER BY s.started_at DESC LIMIT 1), ''),
+           t.status, t.branch_naming_json
+    FROM tickets t
+    WHERE NOT EXISTS (SELECT 1 FROM ticket_units u WHERE u.ticket_id = t.id);
+
+    UPDATE sessions SET work_unit_id = ticket_id
+    WHERE work_unit_id IS NULL AND EXISTS (SELECT 1 FROM ticket_units u WHERE u.id = sessions.ticket_id);
+  `);
 }
 
 export function closeDb(): void {

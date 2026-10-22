@@ -1,19 +1,26 @@
 import { execa } from "execa";
-import { join } from "node:path";
-import { sanitize, repoWorktreesDir } from "../paths.js";
+import { lstatSync, mkdirSync, readdirSync, readlinkSync, rmdirSync, symlinkSync, unlinkSync } from "node:fs";
+import { isAbsolute, join, resolve } from "node:path";
+import { delegaitorHome, sanitize, repoWorktreesDir } from "../paths.js";
 import type { PlannedTicket } from "../types.js";
 
 export const DEFAULT_BRANCH_PREFIX = "feature/";
 
-export function branchName(ticketId: string, title: string, prefix: string = DEFAULT_BRANCH_PREFIX): string {
+export function branchName(
+  ticketId: string,
+  title: string,
+  prefix: string = DEFAULT_BRANCH_PREFIX,
+  repoAlias?: string,
+): string {
+  const disambiguator = repoAlias ? `-${sanitize(repoAlias)}` : "";
   // Only [a-z0-9-]: dots, spaces and punctuation from titles would give names git rejects (e.g. a trailing ".").
   const slug = transliterate(title)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+/, "")
-    .slice(0, 40)
+    .slice(0, Math.max(1, 40 - disambiguator.length))
     .replace(/-+$/, "");
-  return slug ? `${prefix}${sanitize(ticketId)}-${slug}` : `${prefix}${sanitize(ticketId)}`;
+  return `${prefix}${sanitize(ticketId)}${slug ? `-${slug}` : ""}${disambiguator}`;
 }
 
 // Letters that Unicode normalization doesn't decompose into base + accent.
@@ -57,6 +64,82 @@ export async function createWorktree(opts: CreateWorktreeOptions): Promise<strin
 
 export async function removeWorktree(repoPath: string, worktreePath: string): Promise<void> {
   await execa("git", ["worktree", "remove", "--force", worktreePath], { cwd: repoPath });
+}
+
+export interface TicketWorkspaceRepo {
+  alias: string;
+  worktreePath: string;
+}
+
+export function prepareTicketWorkspace(workspacePath: string, repos: TicketWorkspaceRepo[]): void {
+  assertManagedWorkspace(workspacePath);
+  try {
+    const workspaceStat = lstatSync(workspacePath);
+    if (!workspaceStat.isDirectory() || workspaceStat.isSymbolicLink()) {
+      throw new Error(`Refusing to use non-directory workspace path "${workspacePath}".`);
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    mkdirSync(workspacePath);
+  }
+  const created: string[] = [];
+  try {
+    for (const repo of repos) {
+      const linkPath = join(workspacePath, sanitize(repo.alias));
+      try {
+        const stat = lstatSync(linkPath);
+        if (!stat.isSymbolicLink() || resolve(workspacePath, readlinkSync(linkPath)) !== resolve(repo.worktreePath)) {
+          throw new Error(`Refusing to replace unmanaged workspace entry "${linkPath}".`);
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        symlinkSync(repo.worktreePath, linkPath, "dir");
+        created.push(linkPath);
+      }
+    }
+  } catch (error) {
+    for (const path of created.reverse()) unlinkSync(path);
+    throw error;
+  }
+}
+
+export function removeTicketWorkspace(workspacePath: string, repos: TicketWorkspaceRepo[]): void {
+  assertManagedWorkspace(workspacePath);
+  try {
+    const workspaceStat = lstatSync(workspacePath);
+    if (!workspaceStat.isDirectory() || workspaceStat.isSymbolicLink()) {
+      throw new Error(`Refusing to remove non-directory workspace path "${workspacePath}".`);
+    }
+    for (const repo of repos) {
+      const linkPath = join(workspacePath, sanitize(repo.alias));
+      try {
+        const stat = lstatSync(linkPath);
+        if (!stat.isSymbolicLink() || resolve(workspacePath, readlinkSync(linkPath)) !== resolve(repo.worktreePath)) {
+          throw new Error(`Refusing to remove unmanaged workspace entry "${linkPath}".`);
+        }
+        unlinkSync(linkPath);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    if (readdirSync(workspacePath).length === 0) rmdirSync(workspacePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw new Error(`Could not safely clean ticket workspace "${workspacePath}": ${(error as Error).message}`);
+  }
+}
+
+function assertManagedWorkspace(workspacePath: string): void {
+  const root = resolve(delegaitorHome(), "workspaces");
+  mkdirSync(root, { recursive: true });
+  const rootStat = lstatSync(root);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+    throw new Error(`Refusing to use non-directory workspaces root "${root}".`);
+  }
+  const target = resolve(workspacePath);
+  if (!isAbsolute(root) || resolve(target, "..") !== root || target === root) {
+    throw new Error(`Refusing to use workspace outside the managed workspaces directory: "${workspacePath}".`);
+  }
 }
 
 /** True when the worktree has no uncommitted changes (tracked or untracked). */
@@ -124,18 +207,18 @@ export function detectLikelyConflicts(tickets: PlannedTicket[]): Map<string, str
   for (const t of tickets) {
     const text = `${t.title}\n${t.body ?? ""}`;
     const paths = new Set((text.match(pathRe) ?? []).filter((p) => p.includes("/")));
-    pathsByTicket.set(t.id, paths);
+    pathsByTicket.set(t.unitId, paths);
   }
 
   for (const a of tickets) {
     for (const b of tickets) {
-      if (a.id >= b.id || a.repoId !== b.repoId) continue;
-      const shared = [...(pathsByTicket.get(a.id) ?? [])].filter((p) =>
-        pathsByTicket.get(b.id)?.has(p),
+      if (a.unitId >= b.unitId || a.repoId !== b.repoId) continue;
+      const shared = [...(pathsByTicket.get(a.unitId) ?? [])].filter((p) =>
+        pathsByTicket.get(b.unitId)?.has(p),
       );
       if (shared.length) {
-        conflicts.set(a.id, [...(conflicts.get(a.id) ?? []), b.id]);
-        conflicts.set(b.id, [...(conflicts.get(b.id) ?? []), a.id]);
+        conflicts.set(a.unitId, [...(conflicts.get(a.unitId) ?? []), b.unitId]);
+        conflicts.set(b.unitId, [...(conflicts.get(b.unitId) ?? []), a.unitId]);
       }
     }
   }

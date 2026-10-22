@@ -208,6 +208,74 @@ delegaitor plan --profile my-board --notion-status "Backlog"
   with `delegaitor_profile_list`, `delegaitor_profile_save`,
   `delegaitor_profile_remove`.
 
+### Multi-repository tickets
+
+A profile may hold a local repo catalog. Each repeated `--repository` value
+has the form `alias|owner/repo|/absolute/clone/path|base`; MCP profile saves
+use a `repositories` array with those four required fields.
+These paths and mappings are stored only under `$DELEGAITOR_HOME`. The legacy
+`--repo` and `--repo-path` options continue to work unchanged for a
+single-repository profile. Do not combine either option with a catalog:
+delegAItor rejects mixed single-repository and catalog settings rather than
+silently choosing one.
+
+```bash
+delegaitor profile save my-board --notion-db <database-id> --agent copilot \
+  --repository 'web|owner/web|/work/web|main' \
+  --repository 'api|owner/api|/work/api|main'
+delegaitor plan --profile my-board
+delegaitor dispatch --profile my-board
+```
+
+One ticket creates one agent session and a dedicated workspace containing a
+separate branch and worktree for every repository in the catalog. The agent
+gets the ticket context and catalog paths, then decides which repositories
+need changes; the catalog is the complete allowed scope. The original clones
+are never edited. Cmux opens one workspace per ticket, rooted at the
+workspace container, with each repo available under its alias.
+
+New clones next to the others are **not** picked up automatically; the
+catalog is an explicit allow-list. Add, change or drop one entry without
+retyping the rest:
+
+```bash
+delegaitor profile save my-board --merge --repository 'jobs|owner/jobs|/work/jobs|main'  # add
+delegaitor profile save my-board --merge --repository 'api|owner/api|/work/api|develop'  # change
+delegaitor profile save my-board --remove-repository jobs                                 # drop
+```
+
+Catalog changes apply to tickets dispatched afterwards; running sessions keep
+the worktrees they started with.
+
+For example, suppose a fictional team keeps its `web` and `api` clones under
+`~/work/recipe-app` and has already saved a `recipe-board` profile. After
+cloning a new background-worker repo, add it to that profile:
+
+```bash
+git clone git@github.com:example-team/recipe-worker.git "$HOME/work/recipe-app/worker"
+delegaitor profile save recipe-board --merge \
+  --repository "worker|example-team/recipe-worker|$HOME/work/recipe-app/worker|main"
+delegaitor profile show recipe-board
+delegaitor plan --profile recipe-board
+delegaitor dispatch --profile recipe-board
+```
+
+Replace the fictional organization and repository with your own. The existing
+`web` and `api` entries stay in the catalog. Newly dispatched tickets get all
+three worktrees in one session; the agent changes only the repos the ticket
+needs. Keep the full `--repository` value quoted: `|` separates its four
+fields and must not be interpreted as a shell pipeline.
+
+`plan` previews the repo branches and worktree paths; `dispatch` uses the
+normal confirmation prompt. Shipping checks every worktree, rejects any
+uncommitted changes, skips repos with no commits, and creates PRs only for
+repos with changes. A parent moves to review only after every changed repo
+has a PR; a failed repo PR keeps the parent from becoming ready. Closing
+preflights all required PRs and refuses to mark the parent done until they
+are merged, then cleans all catalog worktrees and branches. Repo-specific
+statuses, PRs, locks, and partial failures remain visible under the one
+parent session.
+
 ## Branch prefixes
 
 delegAItor picks a prefix per ticket by matching keywords (English and
@@ -260,9 +328,11 @@ To skip classification and force one prefix on every branch, pass
 
 ## CLI usage
 
-Each ticket gets a branch named `<prefix><ticket-id>-<title-slug>`, e.g.
-`fix/1a2b3c4d-...-sokning-visar-fel-resultat`. Accented letters in titles are
-transliterated (sökning → sokning) so branch names stay plain ASCII. See
+Each ticket gets a branch named
+`<prefix><ticket-id>-<title-slug>[-<repo-alias>]`, e.g.
+`fix/1a2b3c4d-...-sokning-visar-fel-resultat-web`. Accented letters in titles are
+transliterated (sökning → sokning) so branch names stay plain ASCII. The
+repo suffix distinguishes worktrees in a multi-repo ticket. See
 [Branch prefixes](#branch-prefixes) for how the prefix is chosen.
 
 ```bash
@@ -642,12 +712,8 @@ This token is scoped to you personally (like a PAT), so the default
    - Status property: defaults to `Status` — works with either Notion's
      older `select` type or its newer `status` type automatically. If your
      status column has a different name, pass `--notion-status-prop`.
-   - Assignee property: defaults to `Assignee` (a Person property).
-   - If your database uses a different name for the assignee property,
-     there's currently no CLI flag for it — call `notionTicketSource()`
-     directly from `packages/core/src/tickets/notion.ts` with a
-     `properties: { assignee: "Owner" }` override, or add a
-     `--notion-assignee-prop` flag yourself as a small PR.
+   - Assignee property: defaults to `Assignee` (a Person property); override
+     it with `--notion-assignee-prop` (MCP/profile: `notionAssigneeProp`).
 3. **Context passed to the agent**: by default delegAItor fetches each
    page's actual **body content** — the paragraphs/headings/bullet lists
    written below the title and properties, the same text you see
@@ -854,6 +920,12 @@ delegaitor dispatch --notion-db <database-id> --notion-title-prop "Task" \
   --move-on-dispatch "In progress" --move-on-review "Ready for review" \
   --repo owner/repo --agent copilot
 ```
+
+For a multi-repository ticket, the parent board card moves to review only
+after the agent finishes and every changed repo has a PR. Repos with no
+changes are reported and do not need a PR. It moves to done only after all
+required PRs are merged and the worktrees are safely closed. `overview`
+shows one session with each repo's branch, status, and PR.
 
 **Credentials for agent sessions.** Dispatched sessions run in new cmux
 shells that don't inherit variables you `export`ed, so the move on

@@ -9,10 +9,13 @@ export interface LaunchTarget {
 const MAX_WORKSPACE_TITLE = 60;
 
 /** The cmux tab name: the ticket title on one line, shortened to fit the sidebar; the id only if there's no title. */
-export function workspaceTitle(title: string, fallback: string): string {
+export function workspaceTitle(title: string, fallback: string, repoAlias?: string): string {
   const oneLine = title.replace(/\s+/g, " ").trim();
   if (!oneLine) return fallback;
-  return oneLine.length > MAX_WORKSPACE_TITLE ? `${oneLine.slice(0, MAX_WORKSPACE_TITLE - 1).trimEnd()}…` : oneLine;
+  const suffix = repoAlias ? ` [${repoAlias}]` : "";
+  const maxTitleLength = MAX_WORKSPACE_TITLE - suffix.length;
+  if (oneLine.length <= maxTitleLength) return `${oneLine}${suffix}`;
+  return `${oneLine.slice(0, maxTitleLength - 1).trimEnd()}…${suffix}`;
 }
 
 export interface LaunchResult {

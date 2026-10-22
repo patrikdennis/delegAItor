@@ -22,6 +22,12 @@ export function repoWorktreesDir(repoId: string): string {
   return dir;
 }
 
+export function ticketWorkspaceDir(ticketId: string): string {
+  const root = join(delegaitorHome(), "workspaces");
+  mkdirSync(root, { recursive: true });
+  return join(root, sanitize(ticketId));
+}
+
 export function promptsDir(runId: string): string {
   const dir = join(delegaitorHome(), "runs", sanitize(runId), "prompts");
   mkdirSync(dir, { recursive: true });
